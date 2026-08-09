@@ -180,12 +180,9 @@ export function restoreRooms(list: Room[]) {
       notice: raw.notice ?? null,
       updatedAt: raw.updatedAt ?? Date.now(),
     }
-    // Reset mid-phase rooms to lobby on restart (timers lost)
-    if (midGame(room.status) && room.status !== 'scoreboard' && room.status !== 'reveal') {
-      room.status = 'lobby'
-      Object.assign(room, emptyGameFields())
-      room.scores = raw.scores && typeof raw.scores === 'object' ? { ...raw.scores } : {}
-    }
+    // Keep mid-game status when hydrating from Redis. Resetting emoji/guess→lobby
+    // here broke start: saveRoomRecord published an update, this instance reloaded,
+    // and wipe-to-lobby bounced everyone straight back to the lobby UI.
     rooms.set(room.code, room)
   }
 }
@@ -227,8 +224,9 @@ export async function reloadRoomFromStore(code: string): Promise<Room | null> {
     // publish-before-write races were deleting lobbies mid-session).
     return local ?? null
   }
-  // Prefer the newer copy when both exist.
-  if (local && (local.updatedAt || 0) > (raw.updatedAt || 0)) {
+  // Ignore Redis echo of our own save (same or older updatedAt), otherwise we
+  // clobber live sockets (save persists connected:false) right after startGame.
+  if (local && (local.updatedAt || 0) >= (raw.updatedAt || 0)) {
     return local
   }
   const localConnected = new Set<string>()
