@@ -1,29 +1,22 @@
 import { useEffect, useState } from 'react'
 import {
-  applyPartyToken,
   advanceReveal,
   backToLobby,
-  claimPartySession,
   clearSession,
   createGame,
   endParty,
   ensureSessionBound,
-  fetchPartyInfo,
   fetchHealth,
   fetchPublicLobbies,
   fetchRoomPreview,
   joinGame,
-  loadPartyPass,
   loadSession,
   nextRound,
-  redeemParty,
   rejoinGame,
-  savePartyPass,
   saveSession,
   setLanguage as setRoomLanguage,
   setPublicLobby,
   setRoomHandler,
-  startCheckout,
   startGame,
   submitEmojis,
   submitGuess,
@@ -35,7 +28,7 @@ import {
 } from './api'
 import { loadLanguage, rememberLanguage, t } from './i18n'
 import { JoinQr } from './qr'
-import type { Lang, PartyInfo, PartyPassLocal, PublicRoom } from './types'
+import type { Lang, PublicRoom } from './types'
 
 const FACTOPIA_URL = 'https://factopia.net'
 const SABOTEXT_URL = 'https://sabotext.com'
@@ -120,26 +113,15 @@ export default function App() {
   const [playerId, setPlayerId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [partyPass, setPartyPass] = useState<PartyPassLocal | null>(() => loadPartyPass())
-  const [partyInfo, setPartyInfo] = useState<PartyInfo | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const [promo, setPromo] = useState('')
-  const [firstTime, setFirstTime] = useState(true)
   const [conn, setConn] = useState<ConnState>('connecting')
-
-  const hasParty = Boolean(partyPass && partyPass.expiresAt > Date.now())
 
   useEffect(() => {
     rememberLanguage(uiLang)
   }, [uiLang])
 
   useEffect(() => {
-    void fetchPartyInfo()
-      .then(setPartyInfo)
-      .catch((e) => {
-        setError(e instanceof Error ? e.message : ui.stripeMissing)
-      })
     void fetchHealth()
       .then((h) => {
         if (h.persist && !h.persist.configured) {
@@ -151,7 +133,7 @@ export default function App() {
         }
       })
       .catch(() => null)
-  }, [ui.stripeMissing, uiLang])
+  }, [uiLang])
 
   useEffect(() => {
     setRoomHandler((r) => setRoom(r))
@@ -205,26 +187,10 @@ export default function App() {
 
     const sessionId = params.get('party_session')
     const cancelled = params.get('party_cancel')
-    if (cancelled) {
-      setBanner(ui.partyCancel)
+    if (sessionId || cancelled) {
+      // Clear leftover Stripe return URLs — payments are removed.
       if (!joinCodeFromUrl) window.history.replaceState({}, '', '/')
-    }
-    if (sessionId) {
-      void (async () => {
-        const res = await claimPartySession(sessionId)
-        if (res.token && res.expiresAt) {
-          const pass = { token: res.token, expiresAt: res.expiresAt }
-          savePartyPass(pass)
-          setPartyPass(pass)
-          setBanner(ui.partyThanks)
-          if (res.roomCode) {
-            await applyPartyToken(res.token).catch(() => null)
-          }
-        } else if (res.error) {
-          setError(res.error)
-        }
-        if (!joinCodeFromUrl) window.history.replaceState({}, '', '/')
-      })()
+      localStorage.removeItem('partypaths-party-pass')
     }
 
     // Joining via QR/link: never auto-rejoin a stored seat — that blocked "new"
@@ -245,9 +211,6 @@ export default function App() {
           setPlayerId(res.playerId)
           setName(session.name)
           setScreen('play')
-          if (hasParty && partyPass) {
-            await applyPartyToken(partyPass.token).catch(() => null)
-          }
         } else {
           clearSession()
         }
@@ -280,31 +243,12 @@ export default function App() {
     }
   }, [screen, uiLang, ui.error])
 
-  async function checkout(plan: 'day' | 'week') {
-    setBusy(true)
-    setError(null)
-    try {
-      const res = await startCheckout({
-        locale: uiLang,
-        roomCode: room?.code,
-        plan,
-        firstTime,
-      })
-      if (res.url) window.location.href = res.url
-      else setError(res.error || ui.error)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : ui.error)
-    } finally {
-      setBusy(false)
-    }
-  }
-
   async function onCreate(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      const res = await createGame(name, uiLang, partyPass?.token, createPublic && hasParty)
+      const res = await createGame(name, uiLang, createPublic)
       if (!res.ok) {
         setError(res.error)
         return
@@ -355,31 +299,6 @@ export default function App() {
       setRoom(res.room)
       setPlayerId(res.playerId)
       setScreen('play')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : ui.error)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function onRedeem(e: React.FormEvent) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    try {
-      const res = await redeemParty(promo)
-      if (!res.ok) {
-        setError(res.error || ui.error)
-        return
-      }
-      if (res.token && res.expiresAt) {
-        const pass = { token: res.token, expiresAt: res.expiresAt }
-        savePartyPass(pass)
-        setPartyPass(pass)
-      }
-      if (res.room) setRoom(res.room)
-      setPromo('')
-      setBanner(ui.partyThanks)
     } catch (err) {
       setError(err instanceof Error ? err.message : ui.error)
     } finally {
@@ -475,44 +394,7 @@ export default function App() {
             </button>
           </div>
           <SisterGameLinks ui={ui} />
-          {!hasParty && (
-            <div className="party-box">
-              <p className="muted">{ui.partyBlurb}</p>
-              <p className="muted">{ui.freeTier}</p>
-              <div className="cta-row">
-                <button
-                  type="button"
-                  className="btn btn-small"
-                  disabled={busy || partyInfo?.enabled === false}
-                  onClick={() => void checkout('day')}
-                >
-                  {ui.unlockParty} · {partyInfo?.amountLabel ?? '…'} / {ui.partyDay}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-small"
-                  disabled={busy || partyInfo?.enabled === false}
-                  onClick={() => void checkout('week')}
-                >
-                  {partyInfo?.weekAmountLabel ?? '…'} / {ui.partyWeek}
-                </button>
-              </div>
-              <label className="muted row" style={{ marginTop: '0.75rem' }}>
-                <input
-                  type="checkbox"
-                  checked={firstTime}
-                  onChange={(e) => setFirstTime(e.target.checked)}
-                />
-                {ui.firstTime}
-              </label>
-            </div>
-          )}
-          {hasParty && partyPass && (
-            <p className="muted">
-              {ui.partyActive} {ui.partyUntil}{' '}
-              {new Date(partyPass.expiresAt).toLocaleString(uiLang === 'en' ? 'en' : 'sv')}
-            </p>
-          )}
+          <p className="muted">{ui.freeTier}</p>
         </div>
       )}
 
@@ -523,18 +405,14 @@ export default function App() {
             {ui.yourName}
             <input value={name} onChange={(e) => setName(e.target.value)} maxLength={20} required />
           </label>
-          {hasParty ? (
-            <label className="row" style={{ marginTop: '0.75rem' }}>
-              <input
-                type="checkbox"
-                checked={createPublic}
-                onChange={(e) => setCreatePublic(e.target.checked)}
-              />
-              {ui.createPublic}
-            </label>
-          ) : (
-            <p className="muted">{ui.createPublicNeedParty}</p>
-          )}
+          <label className="row" style={{ marginTop: '0.75rem' }}>
+            <input
+              type="checkbox"
+              checked={createPublic}
+              onChange={(e) => setCreatePublic(e.target.checked)}
+            />
+            {ui.createPublic}
+          </label>
           <div className="cta-row">
             <button type="submit" className="btn" disabled={busy}>
               {ui.start}
@@ -655,14 +533,6 @@ export default function App() {
           copied={copied}
           setCopied={setCopied}
           leave={leave}
-          hasParty={hasParty}
-          partyInfo={partyInfo}
-          checkout={checkout}
-          promo={promo}
-          setPromo={setPromo}
-          onRedeem={onRedeem}
-          firstTime={firstTime}
-          setFirstTime={setFirstTime}
         />
       )}
 
@@ -684,14 +554,6 @@ function PlayView({
   copied,
   setCopied,
   leave,
-  hasParty,
-  partyInfo,
-  checkout,
-  promo,
-  setPromo,
-  onRedeem,
-  firstTime,
-  setFirstTime,
 }: {
   room: PublicRoom
   playerId: string
@@ -705,20 +567,9 @@ function PlayView({
   copied: boolean
   setCopied: (v: boolean) => void
   leave: () => void
-  hasParty: boolean
-  partyInfo: PartyInfo | null
-  checkout: (plan: 'day' | 'week') => Promise<void>
-  promo: string
-  setPromo: (v: string) => void
-  onRedeem: (e: React.FormEvent) => Promise<void>
-  firstTime: boolean
-  setFirstTime: (v: boolean) => void
 }) {
   const ui = t(room.language || uiLang)
   const isHost = room.hostId === playerId
-  const roomHasParty =
-    room.premiumTier === 'party' && (room.premiumExpiresAt ?? 0) > Date.now()
-  const effectiveParty = hasParty || roomHasParty
   const [showQr, setShowQr] = useState(false)
   const [tvMode, setTvMode] = useState(false)
   const [emojiDraft, setEmojiDraft] = useState('')
@@ -846,7 +697,7 @@ function PlayView({
       </div>
 
       <p className="muted hide-on-tv">{ui.shareHint}</p>
-      <p className="muted hide-on-tv">{effectiveParty ? ui.partyTier : ui.freeTier}</p>
+      <p className="muted hide-on-tv">{ui.freeTier}</p>
       {room.youAreSpectator && <div className="player-hint">{ui.spectatorHint}</div>}
       {isHost && <div className="player-hint ok hide-on-tv">{ui.hostHint}</div>}
 
@@ -982,28 +833,24 @@ function PlayView({
           {isHost && (
             <>
               <p className="muted">{ui.openLobby}</p>
-              {hasParty ? (
-                <div className="mode-grid" style={{ marginBottom: '0.75rem' }}>
-                  <button
-                    type="button"
-                    className={`btn btn-ghost${!room.isPublic ? ' selected-mode' : ''}`}
-                    disabled={busy}
-                    onClick={() => void run(() => setPublicLobby(false))}
-                  >
-                    {ui.openLobbyOff}
-                  </button>
-                  <button
-                    type="button"
-                    className={`btn btn-ghost${room.isPublic ? ' selected-mode' : ''}`}
-                    disabled={busy}
-                    onClick={() => void run(() => setPublicLobby(true))}
-                  >
-                    {ui.openLobbyOn}
-                  </button>
-                </div>
-              ) : (
-                <p className="muted">{ui.openLobbyNeedParty}</p>
-              )}
+              <div className="mode-grid" style={{ marginBottom: '0.75rem' }}>
+                <button
+                  type="button"
+                  className={`btn btn-ghost${!room.isPublic ? ' selected-mode' : ''}`}
+                  disabled={busy}
+                  onClick={() => void run(() => setPublicLobby(false))}
+                >
+                  {ui.openLobbyOff}
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-ghost${room.isPublic ? ' selected-mode' : ''}`}
+                  disabled={busy}
+                  onClick={() => void run(() => setPublicLobby(true))}
+                >
+                  {ui.openLobbyOn}
+                </button>
+              </div>
               <div className="row" style={{ marginBottom: '0.75rem' }}>
                 <button
                   type="button"
@@ -1243,50 +1090,6 @@ function PlayView({
       )}
 
       {error && <p className="error">{error}</p>}
-
-      {!effectiveParty && isHost && (
-        <div className="party-box hide-on-tv">
-          <p className="muted">{ui.partyBlurb}</p>
-          <div className="cta-row">
-            <button
-              type="button"
-              className="btn btn-small"
-              disabled={busy || partyInfo?.enabled === false}
-              onClick={() => void checkout('day')}
-            >
-              {ui.unlockParty}
-            </button>
-          </div>
-          <form onSubmit={(e) => void onRedeem(e)} className="row" style={{ marginTop: '0.75rem' }}>
-            <input
-              value={promo}
-              onChange={(e) => setPromo(e.target.value)}
-              placeholder={ui.redeemCode}
-              disabled={busy}
-              autoCapitalize="characters"
-              autoCorrect="off"
-            />
-            <button type="submit" className="btn btn-ghost btn-small" disabled={busy || !promo.trim()}>
-              {busy ? (uiLang === 'en' ? '…' : '…') : ui.redeem}
-            </button>
-          </form>
-          {error && <p className="error">{error}</p>}
-          <label className="muted row">
-            <input
-              type="checkbox"
-              checked={firstTime}
-              onChange={(e) => setFirstTime(e.target.checked)}
-            />
-            {ui.firstTime}
-          </label>
-        </div>
-      )}
-      {effectiveParty && isHost && room.premiumExpiresAt && (
-        <p className="muted hide-on-tv">
-          {ui.partyActive} {ui.partyUntil}{' '}
-          {new Date(room.premiumExpiresAt).toLocaleString(uiLang === 'en' ? 'en' : 'sv')}
-        </p>
-      )}
     </div>
   )
 }

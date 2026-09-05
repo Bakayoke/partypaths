@@ -1,5 +1,5 @@
 import { io, type Socket } from 'socket.io-client'
-import type { Lang, PartyInfo, PartyPassLocal, PublicRoom, Session } from './types'
+import type { Lang, PublicRoom, Session } from './types'
 
 const API_BASE = (import.meta.env.VITE_SOCKET_URL || '').replace(/\/$/, '')
 
@@ -164,13 +164,8 @@ async function ack<T>(event: string, payload?: unknown): Promise<T> {
 type OkRoom = { ok: true; playerId: string; room: PublicRoom }
 type Err = { ok: false; error: string; code?: string }
 
-export async function createGame(
-  name: string,
-  language: Lang,
-  partyToken?: string | null,
-  isPublic = false,
-) {
-  return ack<OkRoom | Err>('create', { name, language, partyToken, isPublic })
+export async function createGame(name: string, language: Lang, isPublic = false) {
+  return ack<OkRoom | Err>('create', { name, language, isPublic })
 }
 
 export async function joinGame(code: string, name: string) {
@@ -228,24 +223,6 @@ export async function setPublicLobby(isPublic: boolean) {
   return ack<{ ok: boolean; error?: string; room?: PublicRoom }>('setPublicLobby', { isPublic })
 }
 
-export async function redeemParty(code: string) {
-  return ack<{
-    ok: boolean
-    error?: string
-    room?: PublicRoom
-    token?: string
-    expiresAt?: number
-  }>('redeemParty', { code })
-}
-
-export async function applyPartyToken(token: string) {
-  return ack<{ ok: boolean; error?: string; room?: PublicRoom }>('applyPartyToken', { token })
-}
-
-export async function fetchPartyInfo(): Promise<PartyInfo> {
-  return apiJson<PartyInfo>('/api/party/info')
-}
-
 export type HealthInfo = {
   ok: boolean
   rooms?: number
@@ -295,34 +272,7 @@ export async function fetchPublicLobbies(lang?: Lang): Promise<PublicLobbyCard[]
   return data.lobbies ?? []
 }
 
-export async function startCheckout(opts: {
-  locale: Lang
-  roomCode?: string
-  plan: 'day' | 'week'
-  firstTime?: boolean
-}) {
-  return apiJson<{ url?: string; error?: string }>('/api/party/checkout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(opts),
-  })
-}
-
-export async function claimPartySession(sessionId: string) {
-  return apiJson<{
-    token?: string
-    expiresAt?: number
-    roomCode?: string
-    error?: string
-  }>('/api/party/claim', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId }),
-  })
-}
-
 const SESSION_KEY = 'partypaths-session'
-const PASS_KEY = 'partypaths-party-pass'
 
 export function loadSession(): Session | null {
   try {
@@ -340,23 +290,5 @@ export function saveSession(session: Session) {
 
 export function clearSession() {
   localStorage.removeItem(SESSION_KEY)
-}
-
-export function loadPartyPass(): PartyPassLocal | null {
-  try {
-    const raw = localStorage.getItem(PASS_KEY)
-    if (!raw) return null
-    const pass = JSON.parse(raw) as PartyPassLocal
-    if (!pass.expiresAt || pass.expiresAt <= Date.now()) {
-      localStorage.removeItem(PASS_KEY)
-      return null
-    }
-    return pass
-  } catch {
-    return null
-  }
-}
-
-export function savePartyPass(pass: PartyPassLocal) {
-  localStorage.setItem(PASS_KEY, JSON.stringify(pass))
+  localStorage.removeItem('partypaths-party-pass')
 }

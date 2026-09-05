@@ -67,24 +67,8 @@ export type PublicRoom = {
   maxRounds: number
 }
 
-export type PartyInfo = {
-  enabled: boolean
-  amountLabel: string
-  weekAmountLabel: string
-  durationHours: number
-  weekDurationHours: number
-  firstPartyPercentOff: number
-  firstPartyDayLabel: string
-  firstPartyWeekLabel: string
-}
-
 export type Session = {
   code: string
   playerId: string
   name: string
-}
-
-export type PartyPassLocal = {
-  token: string
-  expiresAt: number
 }

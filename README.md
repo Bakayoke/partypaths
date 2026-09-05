@@ -1,17 +1,17 @@
 # Party Paths
 
-Demokratiskt party-DnD — starta ett äventyr, dela sessionskoden, välj klass och rösta fram varje val tillsammans.
+Emoji-viskleken — starta ett spel, dela sessionskoden, följ pathen tillsammans.
 
 **Domän:** [partypaths.com](https://partypaths.com)
+
+Spelet är **helt gratis** — obegränsat antal spelare, hela ordlistan, upp till 12 rundor.
 
 ## Funktioner
 
 - Starta nytt spel → få en fyrabokstavs **sessionskod**
-- Andra går med via koden (gratis max 5, Party = obegränsat)
-- Välj klass: Krigare, Magiker, Ranger, Tjuv, Klerk
-- Kampanj **Shadows of Emberwood** — by, skog, orcher, trollkarl, drake
-- Alla berättelse- och stridsval **röstas** (mest röster vinner; oavgjort → värdens röst)
-- **Party-pass** via Stripe: hela kampanjen + fler spelare (24 h / 7 dagar)
+- Andra går med via koden eller QR
+- Öppna lobbys under Hitta Party
+- Emoji → gissa → reveal → roligaste-fel-röstning
 
 ## Kom igång
 
@@ -33,11 +33,9 @@ npm run dev
 4. Sätt även:
    - `PUBLIC_APP_URL=https://partypaths.com`
    - `CORS_ORIGIN=https://partypaths.com,https://www.partypaths.com`
-   - `STRIPE_SECRET_KEY=sk_live_…`
-   - `STRIPE_WEBHOOK_SECRET=whsec_…` (webhook → `/api/stripe/webhook`)
 5. Verifiera: `GET /api/health` → `persist.configured: true`.
 
-Utan Redis försvinner Party-pass och rum vid restart. Alternativ: volume + `PARTYPATHS_DATA_DIR=/data`.
+Utan Redis försvinner rum vid restart. Alternativ: volume + `PARTYPATHS_DATA_DIR=/data`.
 
 ### Cloudflare (frontend)
 
@@ -73,6 +71,5 @@ I produktion kan servern också servera `client/dist` om du kör allt på Railwa
 
 - React + Vite (klient)
 - Express + Socket.io (realtid)
-- Stripe Checkout (Party-pass)
 - Redis (persistens)
 - TypeScript

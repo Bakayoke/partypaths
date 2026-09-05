@@ -17,15 +17,9 @@ import {
   sanitizeEmojis,
   scoreGuess,
 } from './game/paths.js'
-import {
-  limitsFor,
-  lookupPass,
-  redeemPassCode,
-  tierFromExpiry,
-  type PartyPass,
-} from './premium.js'
+import { limitsFor, tierFromExpiry } from './premium.js'
 import { deleteRoomRecord, loadRoomRecord, saveRoomRecord } from './persist.js'
-import { freeWordPack, wordPack } from './words/index.js'
+import { wordPack } from './words/index.js'
 import type {
   GamePath,
   Lang,
@@ -250,12 +244,9 @@ export function createRoom(
   hostName: string,
   socketId: string,
   language: Lang = 'sv',
-  partyToken?: string | null,
+  _partyToken?: string | null,
   wantPublic = false,
 ): { room: Room; playerId: string } {
-  const pass = lookupPass(partyToken)
-  const premiumExpiresAt = pass?.expiresAt ?? null
-  const isParty = tierFromExpiry(premiumExpiresAt) === 'party'
   const code = uniqueCode()
   const playerId = crypto.randomUUID()
   const host: Player = {
@@ -271,8 +262,8 @@ export function createRoom(
     players: [host],
     language: language === 'en' ? 'en' : 'sv',
     status: 'lobby',
-    premiumExpiresAt,
-    isPublic: Boolean(wantPublic && isParty),
+    premiumExpiresAt: null,
+    isPublic: Boolean(wantPublic),
     waitlist: [],
     emojiSeconds: EMOJI_SECONDS,
     guessSeconds: GUESS_SECONDS,
@@ -530,11 +521,6 @@ export function setPublicLobby(
   const room = rooms.get(code)
   if (!room) return { error: 'Rum saknas' }
   if (room.hostId !== playerId) return { error: 'Bara värden kan ändra' }
-  if (isPublic && tierFromExpiry(room.premiumExpiresAt) !== 'party') {
-    return {
-      error: roomMsg(room, 'Öppen lobby kräver Party-pass', 'Open lobby requires a Party pass'),
-    }
-  }
   room.isPublic = Boolean(isPublic)
   touch(room)
   return room
@@ -563,8 +549,7 @@ export function setPhaseTimers(
 }
 
 function packForRoom(room: Room): string[] {
-  const limits = roomLimits(room)
-  return limits.freePack ? freeWordPack(room.language) : wordPack(room.language)
+  return wordPack(room.language)
 }
 
 function beginEmojiPhase(room: Room) {
@@ -914,38 +899,6 @@ export function pruneIdleRooms() {
       void deleteRoomRecord(code)
     }
   }
-}
-
-export function redeemParty(
-  code: string,
-  playerId: string,
-  passCode: string,
-): { room: Room; pass: PartyPass } | { error: string } {
-  const room = rooms.get(code)
-  if (!room) return { error: 'Rum saknas' }
-  if (room.hostId !== playerId) return { error: 'Bara värden' }
-  const pass = redeemPassCode(passCode)
-  if ('error' in pass) return pass
-  room.premiumExpiresAt = pass.expiresAt
-  touch(room)
-  return { room, pass }
-}
-
-export function applyPartyToken(code: string, token: string): Room | { error: string } {
-  const room = rooms.get(code)
-  if (!room) return { error: 'Rum saknas' }
-  const pass = lookupPass(token)
-  if (!pass) return { error: 'Ogiltigt party-pass' }
-  room.premiumExpiresAt = pass.expiresAt
-  touch(room)
-  return room
-}
-
-export function unlockRoomWithPass(code: string, pass: PartyPass) {
-  const room = rooms.get(code.toUpperCase())
-  if (!room) return
-  room.premiumExpiresAt = pass.expiresAt
-  touch(room)
 }
 
 function playerName(room: Room, id: string) {

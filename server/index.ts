@@ -20,7 +20,6 @@ import {
   subscribeRoomUpdates,
 } from './persist.js'
 import {
-  applyPartyToken,
   allRooms,
   advanceReveal,
   backToLobby,
@@ -36,7 +35,6 @@ import {
   previewRoom,
   pruneIdleRooms,
   reconnectSocket,
-  redeemParty,
   reloadRoomFromStore,
   restoreRooms,
   roomsNeedingTick,
@@ -50,16 +48,8 @@ import {
   submitEmojis,
   submitGuess,
   toPublicRoom,
-  unlockRoomWithPass,
   voteFunny,
 } from './rooms.js'
-import {
-  claimPartyCheckoutSession,
-  createPartyCheckoutSession,
-  handleStripeWebhook,
-  partyCheckoutPublicInfo,
-  stripeEnvDiagnostics,
-} from './stripe.js'
 import type { Lang } from './types.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -124,23 +114,6 @@ function broadcastRoom(code: string) {
   }
 }
 
-app.post(
-  '/api/stripe/webhook',
-  express.raw({ type: 'application/json' }),
-  async (req, res) => {
-    const result = await handleStripeWebhook(
-      req.body as Buffer,
-      req.headers['stripe-signature'] as string | undefined,
-    )
-    if ('error' in result) {
-      res.status(result.status).json({ error: result.error })
-      return
-    }
-    persistNow()
-    res.json({ received: true })
-  },
-)
-
 app.use(cors({ origin: corsOrigin, credentials: true }))
 app.use(express.json())
 
@@ -150,12 +123,7 @@ app.get('/api/health', (_req, res) => {
     service: 'partypaths',
     rooms: allRooms().size,
     persist: persistDiagnostics(),
-    stripe: stripeEnvDiagnostics(),
   })
-})
-
-app.get('/api/party/info', (_req, res) => {
-  res.json(partyCheckoutPublicInfo())
 })
 
 app.get('/api/room/:code/preview', async (req, res) => {
@@ -177,40 +145,6 @@ app.get('/api/lobbies', (req, res) => {
   res.json({ lobbies, count: lobbies.length })
 })
 
-app.post('/api/party/checkout', async (req, res) => {
-  const result = await createPartyCheckoutSession({
-    locale: req.body?.locale,
-    roomCode: req.body?.roomCode,
-    plan: req.body?.plan,
-    firstTime: Boolean(req.body?.firstTime),
-  })
-  if ('error' in result) {
-    res.status(400).json(result)
-    return
-  }
-  res.json(result)
-})
-
-app.post('/api/party/claim', async (req, res) => {
-  const sessionId = String(req.body?.sessionId ?? '')
-  const result = await claimPartyCheckoutSession(sessionId)
-  if ('error' in result) {
-    res.status(400).json(result)
-    return
-  }
-  if (result.roomCode) {
-    unlockRoomWithPass(result.roomCode, result)
-    broadcastRoom(result.roomCode)
-  }
-  persistNow()
-  res.json({
-    token: result.token,
-    expiresAt: result.expiresAt,
-    plan: result.plan,
-    roomCode: result.roomCode,
-  })
-})
-
 io.on('connection', (socket) => {
   function bindingFrom(payload?: { code?: unknown; roomCode?: unknown; playerId?: unknown }) {
     let binding = getBinding(socket.id)
@@ -226,9 +160,8 @@ io.on('connection', (socket) => {
     try {
       const name = String(payload?.name ?? '')
       const language = (payload?.language === 'en' ? 'en' : 'sv') as Lang
-      const partyToken = payload?.partyToken ? String(payload.partyToken) : null
       const wantPublic = Boolean(payload?.isPublic)
-      const { room, playerId } = createRoom(name, socket.id, language, partyToken, wantPublic)
+      const { room, playerId } = createRoom(name, socket.id, language, null, wantPublic)
       // Force snapshot flush so a restart right after create can still restore.
       persistNow()
       await flushPersist()
@@ -386,29 +319,6 @@ io.on('connection', (socket) => {
     const binding = bindingFrom(payload)
     if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
     const result = voteFunny(binding.code, binding.playerId, String(payload?.pathId ?? ''))
-    if ('error' in result) return ack?.({ ok: false, error: result.error })
-    ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
-    broadcastRoom(result.code)
-  })
-
-  socket.on('redeemParty', (payload, ack) => {
-    const binding = bindingFrom(payload)
-    if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
-    const result = redeemParty(binding.code, binding.playerId, String(payload?.code ?? ''))
-    if ('error' in result) return ack?.({ ok: false, error: result.error })
-    ack?.({
-      ok: true,
-      room: toPublicRoom(result.room, binding.playerId),
-      token: result.pass.token,
-      expiresAt: result.pass.expiresAt,
-    })
-    broadcastRoom(result.room.code)
-  })
-
-  socket.on('applyPartyToken', (payload, ack) => {
-    const binding = bindingFrom(payload)
-    if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
-    const result = applyPartyToken(binding.code, String(payload?.token ?? ''))
     if ('error' in result) return ack?.({ ok: false, error: result.error })
     ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
     broadcastRoom(result.code)
