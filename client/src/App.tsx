@@ -33,6 +33,7 @@ import type { Lang, PublicRoom } from './types'
 const FACTOPIA_URL = 'https://factopia.net'
 const SABOTEXT_URL = 'https://sabotext.com'
 const SCOURGEBORN_URL = 'https://scourgeborn.com'
+const YOURTASKIS_URL = 'https://yourtaskis.com'
 
 function SisterGameLink({
   name,
@@ -83,6 +84,13 @@ function SisterGameLinks({ ui, compact }: { ui: ReturnType<typeof t>; compact?: 
         href={SCOURGEBORN_URL}
         pitch={ui.scourgebornPitch}
         cta={ui.scourgebornCta}
+        compact={compact}
+      />
+      <SisterGameLink
+        name="Your Task Is"
+        href={YOURTASKIS_URL}
+        pitch={ui.yourtaskisPitch}
+        cta={ui.yourtaskisCta}
         compact={compact}
       />
     </div>
