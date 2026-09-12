@@ -60,6 +60,8 @@ export type PublicRoom = {
   scores: { playerId: string; name: string; score: number }[]
   paths: PublicPath[] | null
   funnyVotes: Record<string, number> | null
+  nightPath: PublicPath | null
+  nightPathVotes: number
   yourFunnyVote: string | null
   notice: string | null
   youAreSpectator: boolean

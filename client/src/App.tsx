@@ -28,7 +28,8 @@ import {
 } from './api'
 import { loadLanguage, rememberLanguage, t } from './i18n'
 import { JoinQr } from './qr'
-import type { Lang, PublicRoom } from './types'
+import { sharePathCard } from './sharePath'
+import type { Lang, PublicPath, PublicRoom } from './types'
 
 const FACTOPIA_URL = 'https://factopia.net'
 const SABOTEXT_URL = 'https://sabotext.com'
@@ -590,6 +591,7 @@ function PlayView({
   const [tvMode, setTvMode] = useState(false)
   const [emojiDraft, setEmojiDraft] = useState('')
   const [guessDraft, setGuessDraft] = useState('')
+  const [shareNote, setShareNote] = useState<string | null>(null)
   const joinUrl = `https://partypaths.com/?join=${room.code}`
   const inLobby = room.status === 'lobby'
   const activeCount = room.players.filter(
@@ -597,6 +599,15 @@ function PlayView({
   ).length
   const isHostOnly = isHost
   const canPlay = !room.youAreSpectator && !isHostOnly
+
+  const roundFunnyWinners = (() => {
+    const votes = room.funnyVotes
+    if (!votes) return new Set<string>()
+    let best = 0
+    for (const c of Object.values(votes)) best = Math.max(best, c)
+    if (best <= 0) return new Set<string>()
+    return new Set(Object.entries(votes).filter(([, c]) => c === best).map(([id]) => id))
+  })()
 
   useEffect(() => {
     const app = document.querySelector('.app')
@@ -648,6 +659,78 @@ function PlayView({
     } finally {
       setBusy(false)
     }
+  }
+
+  async function onSharePath(path: PublicPath, title?: string) {
+    setShareNote(null)
+    const result = await sharePathCard({
+      path,
+      brand: ui.brand,
+      title,
+      lang: uiLang,
+    })
+    if (result === 'shared') setShareNote(ui.sharePathDone)
+    else if (result === 'downloaded') setShareNote(ui.sharePathSaved)
+    else if (result === 'copied') setShareNote(ui.copied)
+    else setShareNote(ui.error)
+    setTimeout(() => setShareNote(null), 2500)
+  }
+
+  function renderPathCard(
+    path: PublicPath,
+    opts?: { highlight?: boolean; badge?: string; shareTitle?: string },
+  ) {
+    return (
+      <div
+        key={path.id}
+        className={`path-card${opts?.highlight || room.yourFunnyVote === path.id ? ' selected' : ''}${opts?.badge ? ' night-path' : ''}`}
+      >
+        {opts?.badge && <p className="path-badge">{opts.badge}</p>}
+        <div className="muted">
+          {path.originName} · {ui.seedWord}: <strong>{path.seedWord}</strong>
+          {room.funnyVotes?.[path.id] ? ` · ★ ${room.funnyVotes[path.id]}` : ''}
+        </div>
+        <ol className="path-steps">
+          {path.steps.map((s, i) => (
+            <li key={`${path.id}-${i}`}>
+              <span className="emoji-prompt small">{s.emojis || '❓'}</span>
+              <span>
+                {s.guesserName}: {s.guess}{' '}
+                <em className={s.correct ? 'ok' : 'bad'}>
+                  ({s.correct ? ui.correct : ui.wrong}
+                  {!s.correct ? ` ← ${s.meaning}` : ''})
+                </em>
+              </span>
+            </li>
+          ))}
+        </ol>
+        <div className="path-actions hide-on-tv">
+          {room.status === 'funny_vote' && canPlay && (
+            <button
+              type="button"
+              className="btn btn-small"
+              disabled={busy}
+              onClick={() => void run(() => voteFunny(path.id))}
+            >
+              {ui.voteFunny}
+            </button>
+          )}
+          {(room.status === 'reveal' ||
+            room.status === 'funny_vote' ||
+            room.status === 'scoreboard' ||
+            room.status === 'finished') && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-small"
+              disabled={busy}
+              onClick={() => void onSharePath(path, opts?.shareTitle)}
+            >
+              {ui.sharePath}
+            </button>
+          )}
+        </div>
+      </div>
+    )
   }
 
   function phaseTitle() {
@@ -917,6 +1000,9 @@ function PlayView({
               </>
             )}
           </p>
+          {room.roundIndex === 1 && room.hopCount === 1 && (room.status === 'emoji' || room.status === 'guess') && (
+            <p className="muted hide-on-tv">{ui.firstRoundWarmup}</p>
+          )}
           <h2 className="scene-title">{phaseTitle()}</h2>
           {(room.status === 'emoji' || room.status === 'guess' || room.status === 'funny_vote') && (
             <p className="muted">
@@ -994,49 +1080,48 @@ function PlayView({
             </div>
           )}
 
+          {room.status === 'finished' && room.nightPath && (
+            <div className="night-path-wrap">
+              <h3 className="scene-title" style={{ fontSize: '1.6rem', marginBottom: '0.25rem' }}>
+                {ui.pathOfTheNight}
+              </h3>
+              <p className="muted">{ui.pathOfTheNightHint}
+                {room.nightPathVotes > 0 ? ` · ★ ${room.nightPathVotes}` : ''}
+              </p>
+              {renderPathCard(room.nightPath, {
+                highlight: true,
+                badge: ui.pathOfTheNight,
+                shareTitle: ui.pathOfTheNight,
+              })}
+            </div>
+          )}
+
           {room.paths &&
             (room.status === 'reveal' ||
               room.status === 'funny_vote' ||
               room.status === 'scoreboard' ||
               room.status === 'finished') && (
               <div className="path-grid">
-                {room.paths.map((path) => (
-                  <div
-                    key={path.id}
-                    className={`path-card${room.yourFunnyVote === path.id ? ' selected' : ''}`}
-                  >
-                    <div className="muted">
-                      {path.originName} · {ui.seedWord}: <strong>{path.seedWord}</strong>
-                      {room.funnyVotes?.[path.id] ? ` · ${room.funnyVotes[path.id]}` : ''}
-                    </div>
-                    <ol className="path-steps">
-                      {path.steps.map((s, i) => (
-                        <li key={`${path.id}-${i}`}>
-                          <span className="emoji-prompt small">{s.emojis || '❓'}</span>
-                          <span>
-                            {s.guesserName}: {s.guess}{' '}
-                            <em className={s.correct ? 'ok' : 'bad'}>
-                              ({s.correct ? ui.correct : ui.wrong}
-                              {!s.correct ? ` ← ${s.meaning}` : ''})
-                            </em>
-                          </span>
-                        </li>
-                      ))}
-                    </ol>
-                    {room.status === 'funny_vote' && canPlay && (
-                        <button
-                          type="button"
-                          className="btn btn-small"
-                          disabled={busy}
-                          onClick={() => void run(() => voteFunny(path.id))}
-                        >
-                          {ui.voteFunny}
-                        </button>
-                      )}
-                  </div>
-                ))}
+                {room.paths
+                  .filter(
+                    (path) =>
+                      !(
+                        room.status === 'finished' &&
+                        room.nightPath &&
+                        path.id === room.nightPath.id
+                      ),
+                  )
+                  .map((path) =>
+                    renderPathCard(path, {
+                      highlight:
+                        (room.status === 'scoreboard' || room.status === 'finished') &&
+                        roundFunnyWinners.has(path.id),
+                    }),
+                  )}
               </div>
             )}
+
+          {shareNote && <p className="muted hide-on-tv">{shareNote}</p>}
 
           {room.status === 'reveal' && isHost && (
             <div className="cta-row">

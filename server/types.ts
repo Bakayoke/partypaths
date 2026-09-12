@@ -72,6 +72,9 @@ export type Room = {
   submissions: Record<string, string>
   scores: Record<string, number>
   funnyVotes: Record<string, string>
+  /** Funniest path snapshot across the party (most votes in any round). */
+  nightPath: PublicPath | null
+  nightPathVotes: number
   usedWords: string[]
   notice: RoomNotice | null
   updatedAt: number
@@ -123,6 +126,9 @@ export type PublicRoom = {
   scores: { playerId: string; name: string; score: number }[]
   paths: PublicPath[] | null
   funnyVotes: Record<string, number> | null
+  /** Path with the most funny votes across the whole party. */
+  nightPath: PublicPath | null
+  nightPathVotes: number
   yourFunnyVote: string | null
   notice: string | null
   youAreSpectator: boolean

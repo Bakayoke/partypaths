@@ -16,6 +16,7 @@ import {
   normalizeWord,
   sanitizeEmojis,
   scoreGuess,
+  tallyFunnyVotes,
 } from './game/paths.js'
 import { limitsFor, tierFromExpiry } from './premium.js'
 import { deleteRoomRecord, loadRoomRecord, saveRoomRecord } from './persist.js'
@@ -120,6 +121,8 @@ function emptyGameFields(): Pick<
   | 'submissions'
   | 'scores'
   | 'funnyVotes'
+  | 'nightPath'
+  | 'nightPathVotes'
   | 'usedWords'
 > {
   return {
@@ -131,6 +134,8 @@ function emptyGameFields(): Pick<
     submissions: {},
     scores: {},
     funnyVotes: {},
+    nightPath: null,
+    nightPathVotes: 0,
     usedWords: [],
   }
 }
@@ -170,6 +175,8 @@ export function restoreRooms(list: Room[]) {
       submissions: raw.submissions && typeof raw.submissions === 'object' ? raw.submissions : {},
       scores: raw.scores && typeof raw.scores === 'object' ? raw.scores : {},
       funnyVotes: raw.funnyVotes && typeof raw.funnyVotes === 'object' ? raw.funnyVotes : {},
+      nightPath: raw.nightPath && typeof raw.nightPath === 'object' ? raw.nightPath : null,
+      nightPathVotes: Number(raw.nightPathVotes) || 0,
       usedWords: Array.isArray(raw.usedWords) ? raw.usedWords : [],
       notice: raw.notice ?? null,
       updatedAt: raw.updatedAt ?? Date.now(),
@@ -595,8 +602,8 @@ function startRoundInternal(room: Room) {
     return {
       error: roomMsg(
         room,
-        'Max antal rundor nått — skaffa Party för fler',
-        'Max rounds reached — unlock Party for more',
+        'Max antal rundor nått',
+        'Max rounds reached',
       ),
     }
   }
@@ -612,7 +619,9 @@ function startRoundInternal(room: Room) {
     steps: [],
   }))
   room.hopIndex = 0
-  room.hopCount = hopCountForPlayers(order.length)
+  // First round is a warm-up: one hop so the party laughs faster.
+  const fullHops = hopCountForPlayers(order.length)
+  room.hopCount = room.roundIndex === 0 ? Math.min(1, fullHops) : fullHops
   room.funnyVotes = {}
   room.submissions = {}
   room.roundIndex += 1
@@ -635,6 +644,8 @@ export function startGame(code: string, playerId: string): Room | { error: strin
     room.scores = {}
     room.roundIndex = 0
     room.usedWords = []
+    room.nightPath = null
+    room.nightPathVotes = 0
   }
   // Promote waitlist / clear spectators when starting from lobby
   if (room.status === 'lobby') {
@@ -877,6 +888,25 @@ function lockFunnyVotes(room: Room) {
   // Each vote → +10 to the last wrong guesser on that path.
   applyFunnyVotePoints(room.scores, room.paths, room.funnyVotes)
 
+  const winners = tallyFunnyVotes(room.funnyVotes)
+  if (winners.length > 0) {
+    const tally = Object.values(room.funnyVotes).reduce(
+      (acc, id) => {
+        acc[id] = (acc[id] ?? 0) + 1
+        return acc
+      },
+      {} as Record<string, number>,
+    )
+    const bestVotes = Math.max(...winners.map((id) => tally[id] ?? 0))
+    if (bestVotes > room.nightPathVotes) {
+      const pub = publicPaths(room).find((p) => p.id === winners[0])
+      if (pub) {
+        room.nightPath = pub
+        room.nightPathVotes = bestVotes
+      }
+    }
+  }
+
   room.status = 'scoreboard'
   room.phaseEndsAt = SCOREBOARD_MS
   room.submissions = {}
@@ -979,7 +1009,9 @@ export function toPublicRoom(room: Room, viewerId?: string | null): PublicRoom {
 
   const task = viewerId && !viewer?.spectator ? viewerTask(room, viewerId) : null
   const funnyTally: Record<string, number> | null =
-    room.status === 'funny_vote' || room.status === 'scoreboard'
+    room.status === 'funny_vote' ||
+    room.status === 'scoreboard' ||
+    room.status === 'finished'
       ? Object.values(room.funnyVotes).reduce(
           (acc, id) => {
             acc[id] = (acc[id] ?? 0) + 1
@@ -1024,6 +1056,8 @@ export function toPublicRoom(room: Room, viewerId?: string | null): PublicRoom {
     scores: scoreboard,
     paths: showPaths ? publicPaths(room) : null,
     funnyVotes: funnyTally,
+    nightPath: room.nightPath ?? null,
+    nightPathVotes: room.nightPathVotes ?? 0,
     yourFunnyVote: viewerId ? room.funnyVotes[viewerId] ?? null : null,
     notice,
     youAreSpectator: Boolean(viewer?.spectator),

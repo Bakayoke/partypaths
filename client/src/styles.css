@@ -714,6 +714,31 @@ textarea:focus {
   transform: translateY(-1px);
 }
 
+.path-card.night-path {
+  border-color: var(--brand);
+  background: linear-gradient(145deg, rgba(255, 107, 74, 0.18), rgba(12, 18, 36, 0.65));
+  box-shadow: 0 0 0 2px rgba(255, 107, 74, 0.2);
+}
+
+.path-badge {
+  margin: 0 0 0.45rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--sun);
+  letter-spacing: 0.02em;
+}
+
+.path-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.night-path-wrap {
+  margin: 1rem 0 0.25rem;
+}
+
 .path-steps {
   margin: 0.55rem 0 0.75rem;
   padding-left: 1.1rem;
