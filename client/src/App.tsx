@@ -34,6 +34,7 @@ const FACTOPIA_URL = 'https://factopia.net'
 const SABOTEXT_URL = 'https://sabotext.com'
 const SCOURGEBORN_URL = 'https://scourgeborn.com'
 const YOURTASKIS_URL = 'https://yourtaskis.com'
+const KLOTTERKAOS_URL = 'https://klotterkaos.com'
 
 function SisterGameLink({
   name,
@@ -91,6 +92,13 @@ function SisterGameLinks({ ui, compact }: { ui: ReturnType<typeof t>; compact?: 
         href={YOURTASKIS_URL}
         pitch={ui.yourtaskisPitch}
         cta={ui.yourtaskisCta}
+        compact={compact}
+      />
+      <SisterGameLink
+        name="Klotterkaos"
+        href={KLOTTERKAOS_URL}
+        pitch={ui.klotterkaosPitch}
+        cta={ui.klotterkaosCta}
         compact={compact}
       />
     </div>
