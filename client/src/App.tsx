@@ -36,6 +36,7 @@ const SABOTEXT_URL = 'https://sabotext.com'
 const SCOURGEBORN_URL = 'https://scourgeborn.com'
 const YOURTASKIS_URL = 'https://yourtaskis.com'
 const KLOTTERKAOS_URL = 'https://klotterkaos.com'
+const KLUDDKRIG_URL = 'https://kluddkrig.com'
 
 function SisterGameLink({
   name,
@@ -100,6 +101,13 @@ function SisterGameLinks({ ui, compact }: { ui: ReturnType<typeof t>; compact?: 
         href={KLOTTERKAOS_URL}
         pitch={ui.klotterkaosPitch}
         cta={ui.klotterkaosCta}
+        compact={compact}
+      />
+      <SisterGameLink
+        name="Kluddkrig"
+        href={KLUDDKRIG_URL}
+        pitch={ui.kluddkrigPitch}
+        cta={ui.kluddkrigCta}
         compact={compact}
       />
     </div>
