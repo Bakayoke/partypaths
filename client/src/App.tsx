@@ -13,6 +13,7 @@ import {
   loadSession,
   nextRound,
   rejoinGame,
+  rematch,
   saveSession,
   setLanguage as setRoomLanguage,
   setPublicLobby,
@@ -20,6 +21,7 @@ import {
   startGame,
   submitEmojis,
   submitGuess,
+  submitRevengeSeed,
   subscribeConnection,
   type ConnState,
   type PublicLobbyCard,
@@ -599,6 +601,7 @@ function PlayView({
   const [tvMode, setTvMode] = useState(false)
   const [emojiDraft, setEmojiDraft] = useState('')
   const [guessDraft, setGuessDraft] = useState('')
+  const [revengeDraft, setRevengeDraft] = useState('')
   const [shareNote, setShareNote] = useState<string | null>(null)
   const joinUrl = `https://partypaths.com/?join=${room.code}`
   const inLobby = room.status === 'lobby'
@@ -641,7 +644,8 @@ function PlayView({
   useEffect(() => {
     setEmojiDraft('')
     setGuessDraft('')
-  }, [room.status, room.hopIndex, room.roundIndex])
+    if (!room.youHaveRevenge) setRevengeDraft('')
+  }, [room.status, room.hopIndex, room.roundIndex, room.youHaveRevenge])
 
   async function copyCode() {
     await navigator.clipboard.writeText(room.code)
@@ -1008,8 +1012,11 @@ function PlayView({
               </>
             )}
           </p>
-          {room.roundIndex === 1 && room.hopCount === 1 && (room.status === 'emoji' || room.status === 'guess') && (
+          {room.roundIndex === 1 && room.hopCount === 1 && !room.suddenDeath && (room.status === 'emoji' || room.status === 'guess') && (
             <p className="muted hide-on-tv">{ui.firstRoundWarmup}</p>
+          )}
+          {room.suddenDeath && (room.status === 'emoji' || room.status === 'guess' || room.status === 'reveal') && (
+            <p className="sudden-death-banner">{ui.suddenDeath}</p>
           )}
           <h2 className="scene-title">{phaseTitle()}</h2>
           {(room.status === 'emoji' || room.status === 'guess' || room.status === 'funny_vote') && (
@@ -1150,6 +1157,75 @@ function PlayView({
 
           {(room.status === 'scoreboard' || room.status === 'finished') && (
             <>
+              {room.status === 'scoreboard' && room.youHaveRevenge && (
+                <div className="revenge-box hide-on-tv">
+                  <h3>{ui.revengeTitle}</h3>
+                  <p className="muted">{ui.revengeHint}</p>
+                  {room.revengeSeed ? (
+                    <p className="ok">
+                      {ui.revengeLocked}: <strong>{room.revengeSeed}</strong>
+                    </p>
+                  ) : (
+                    <form
+                      className="cta-row"
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        void run(() => submitRevengeSeed(revengeDraft))
+                      }}
+                    >
+                      <input
+                        value={revengeDraft}
+                        onChange={(e) => setRevengeDraft(e.target.value)}
+                        placeholder={ui.revengePlaceholder}
+                        maxLength={32}
+                        required
+                      />
+                      <button type="submit" className="btn btn-small" disabled={busy || revengeDraft.trim().length < 2}>
+                        {ui.revengeSubmit}
+                      </button>
+                    </form>
+                  )}
+                </div>
+              )}
+
+              {room.status === 'finished' && (room.awards ?? []).length > 0 && (
+                <div className="awards-block">
+                  <h3>{ui.awardsTitle}</h3>
+                  <ul className="award-list">
+                    {(room.awards ?? []).map((a) => {
+                      const name = room.players.find((p) => p.id === a.playerId)?.name ?? '?'
+                      const label = uiLang === 'en' ? a.labelEn : a.labelSv
+                      const detail = uiLang === 'en' ? a.detailEn : a.detailSv
+                      return (
+                        <li key={`${a.id}-${a.playerId}`}>
+                          <strong>{label}</strong>
+                          <span>{name}</span>
+                          {detail ? <em className="muted">{detail}</em> : null}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {room.status === 'finished' && (room.rivalStreaks ?? []).length > 0 && (
+                <div className="rivals-block">
+                  <h3>{ui.rivalsTitle}</h3>
+                  <ul className="player-list">
+                    {(room.rivalStreaks ?? []).map((r) => (
+                      <li key={`${r.ruinerId}-${r.victimId}`}>
+                        <span>
+                          {ui.rivalLine
+                            .replace('{ruiner}', r.ruinerName)
+                            .replace('{victim}', r.victimName)
+                            .replace('{count}', String(r.count))}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <h3>{ui.scores}</h3>
               <p className="muted">{ui.pointsHint}</p>
               <ul className="player-list">
@@ -1160,6 +1236,26 @@ function PlayView({
                   </li>
                 ))}
               </ul>
+
+              {room.status === 'finished' && (room.seasonStats ?? []).length > 0 && (
+                <div className="season-block">
+                  <h3>{ui.seasonTitle}</h3>
+                  <ul className="player-list">
+                    {(room.seasonStats ?? []).map((s) => (
+                      <li key={s.playerId}>
+                        <span>
+                          {ui.seasonLine
+                            .replace('{name}', s.name)
+                            .replace('{parties}', String(s.partiesPlayed))
+                            .replace('{score}', String(s.totalScore))
+                            .replace('{wins}', String(s.wins))}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {isHost && room.status === 'scoreboard' && (
                 <div className="cta-row">
                   <button
@@ -1185,6 +1281,14 @@ function PlayView({
                   <button
                     type="button"
                     className="btn"
+                    disabled={busy}
+                    onClick={() => void run(() => rematch())}
+                  >
+                    {ui.rematch}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
                     disabled={busy}
                     onClick={() => void run(() => backToLobby())}
                   >

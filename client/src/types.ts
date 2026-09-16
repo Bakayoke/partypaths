@@ -33,6 +33,23 @@ export type PublicPath = {
   steps: PublicPathStep[]
 }
 
+export type Award = {
+  id: 'champion' | 'saboteur' | 'funniest' | 'savior' | 'poet' | 'rival'
+  playerId: string
+  labelSv: string
+  labelEn: string
+  detailSv?: string
+  detailEn?: string
+}
+
+export type RivalStreakPublic = {
+  ruinerId: string
+  ruinerName: string
+  victimId: string
+  victimName: string
+  count: number
+}
+
 export type PublicRoom = {
   code: string
   hostId: string
@@ -67,6 +84,20 @@ export type PublicRoom = {
   youAreSpectator: boolean
   youAreHost: boolean
   maxRounds: number
+  doublePoints: boolean
+  suddenDeath: boolean
+  revengePlayerId: string | null
+  revengeSeed: string | null
+  youHaveRevenge: boolean
+  awards: Award[]
+  rivalStreaks: RivalStreakPublic[]
+  seasonStats: {
+    playerId: string
+    name: string
+    partiesPlayed: number
+    totalScore: number
+    wins: number
+  }[]
 }
 
 export type Session = {

@@ -739,6 +739,50 @@ textarea:focus {
   margin: 1rem 0 0.25rem;
 }
 
+.sudden-death-banner {
+  margin: 0.35rem 0 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--brand);
+}
+
+.revenge-box,
+.awards-block,
+.rivals-block,
+.season-block {
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(12, 18, 36, 0.45);
+}
+
+.revenge-box h3,
+.awards-block h3,
+.rivals-block h3,
+.season-block h3 {
+  margin: 0 0 0.4rem;
+  font-family: var(--font-display);
+}
+
+.award-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.award-list li {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.award-list strong {
+  color: var(--sun);
+  font-family: var(--font-display);
+}
+
 .path-steps {
   margin: 0.55rem 0 0.75rem;
   padding-left: 1.1rem;

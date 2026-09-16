@@ -36,6 +36,7 @@ import {
   pruneIdleRooms,
   reconnectSocket,
   reloadRoomFromStore,
+  rematch,
   restoreRooms,
   roomsNeedingTick,
   setLanguage,
@@ -47,6 +48,7 @@ import {
   startGame,
   submitEmojis,
   submitGuess,
+  submitRevengeSeed,
   toPublicRoom,
   voteFunny,
 } from './rooms.js'
@@ -283,6 +285,28 @@ io.on('connection', (socket) => {
     const binding = bindingFrom(payload)
     if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
     const result = backToLobby(binding.code, binding.playerId)
+    if ('error' in result) return ack?.({ ok: false, error: result.error })
+    ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
+    broadcastRoom(result.code)
+  })
+
+  socket.on('rematch', (payload, ack) => {
+    const binding = bindingFrom(payload)
+    if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
+    const result = rematch(binding.code, binding.playerId)
+    if ('error' in result) return ack?.({ ok: false, error: result.error })
+    ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
+    broadcastRoom(result.code)
+  })
+
+  socket.on('submitRevengeSeed', (payload, ack) => {
+    const binding = bindingFrom(payload)
+    if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
+    const result = submitRevengeSeed(
+      binding.code,
+      binding.playerId,
+      String(payload?.word ?? ''),
+    )
     if ('error' in result) return ack?.({ ok: false, error: result.error })
     ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
     broadcastRoom(result.code)

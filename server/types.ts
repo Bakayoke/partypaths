@@ -50,6 +50,47 @@ export type GamePath = {
   steps: PathStep[]
 }
 
+export type RivalRuin = {
+  ruinerId: string
+  victimId: string
+  pathId: string
+  roundIndex: number
+}
+
+export type PartyPlayerStats = {
+  correctGuesses: number
+  wrongGuesses: number
+  ruinsDealt: number
+  ruinsSuffered: number
+  funnyVotesReceived: number
+  emojiChars: number
+}
+
+export type SeasonPlayerStats = {
+  partiesPlayed: number
+  totalScore: number
+  wins: number
+  ruinsDealt: number
+  funnyVotesReceived: number
+}
+
+export type Award = {
+  id: 'champion' | 'saboteur' | 'funniest' | 'savior' | 'poet' | 'rival'
+  playerId: string
+  labelSv: string
+  labelEn: string
+  detailSv?: string
+  detailEn?: string
+}
+
+export type RivalStreakPublic = {
+  ruinerId: string
+  ruinerName: string
+  victimId: string
+  victimName: string
+  count: number
+}
+
 export type Room = {
   code: string
   hostId: string
@@ -59,25 +100,31 @@ export type Room = {
   premiumExpiresAt: number | null
   isPublic: boolean
   waitlist: { id: string; name: string; at: number }[]
-  /** Emoji phase seconds */
   emojiSeconds: number
-  /** Guess phase seconds */
   guessSeconds: number
   phaseEndsAt: number
   roundIndex: number
   hopIndex: number
   hopCount: number
   paths: GamePath[]
-  /** playerId -> emojis or guess for current phase */
   submissions: Record<string, string>
   scores: Record<string, number>
   funnyVotes: Record<string, string>
-  /** Funniest path snapshot across the party (most votes in any round). */
   nightPath: PublicPath | null
   nightPathVotes: number
   usedWords: string[]
   notice: RoomNotice | null
   updatedAt: number
+  /** Wrong guesses / fails eligible as future seeds */
+  callbackPool: string[]
+  rivalRuins: RivalRuin[]
+  partyStats: Record<string, PartyPlayerStats>
+  /** Survives rematch within the same room */
+  seasonStats: Record<string, SeasonPlayerStats>
+  awards: Award[]
+  doublePoints: boolean
+  revengePlayerId: string | null
+  revengeSeed: string | null
 }
 
 export type PublicPathStep = {
@@ -118,15 +165,12 @@ export type PublicRoom = {
   submitterCount: number
   submittedIds: string[]
   youSubmitted: boolean
-  /** Secret word / current meaning for emoji phase */
   yourMeaning: string | null
-  /** Emojis to interpret in guess phase */
   yourPromptEmojis: string | null
   yourGuessTargetPathId: string | null
   scores: { playerId: string; name: string; score: number }[]
   paths: PublicPath[] | null
   funnyVotes: Record<string, number> | null
-  /** Path with the most funny votes across the whole party. */
   nightPath: PublicPath | null
   nightPathVotes: number
   yourFunnyVote: string | null
@@ -134,4 +178,18 @@ export type PublicRoom = {
   youAreSpectator: boolean
   youAreHost: boolean
   maxRounds: number
+  doublePoints: boolean
+  suddenDeath: boolean
+  revengePlayerId: string | null
+  revengeSeed: string | null
+  youHaveRevenge: boolean
+  awards: Award[]
+  rivalStreaks: RivalStreakPublic[]
+  seasonStats: {
+    playerId: string
+    name: string
+    partiesPlayed: number
+    totalScore: number
+    wins: number
+  }[]
 }

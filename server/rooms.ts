@@ -3,30 +3,36 @@ import {
   applyCorrectPoints,
   applyFunnyVotePoints,
   authorIndexForHop,
+  CORRECT_POINTS,
   createEmptyStep,
   dealWords,
   EMPTY_GUESS,
   EMOJI_SECONDS,
+  FUNNY_VOTE_POINTS,
   GUESS_SECONDS,
   guesserIndexForHop,
   HOP_COUNT,
   hopCountForPlayers,
+  lastWrongGuesser,
   meaningForHop,
   MIN_PLAYERS,
   normalizeWord,
   sanitizeEmojis,
   scoreGuess,
   tallyFunnyVotes,
+  victimForWrongGuess,
 } from './game/paths.js'
 import { limitsFor, tierFromExpiry } from './premium.js'
 import { deleteRoomRecord, loadRoomRecord, saveRoomRecord } from './persist.js'
 import { wordPack } from './words/index.js'
 import type {
-  GamePath,
+  Award,
   Lang,
+  PartyPlayerStats,
   Player,
   PublicPath,
   PublicRoom,
+  RivalStreakPublic,
   Room,
   RoomStatus,
 } from './types.js'
@@ -111,6 +117,23 @@ function midGame(status: RoomStatus): boolean {
   return status !== 'lobby' && status !== 'finished'
 }
 
+function emptyPartyStats(): PartyPlayerStats {
+  return {
+    correctGuesses: 0,
+    wrongGuesses: 0,
+    ruinsDealt: 0,
+    ruinsSuffered: 0,
+    funnyVotesReceived: 0,
+    emojiChars: 0,
+  }
+}
+
+function ensurePartyStats(room: Room, playerId: string): PartyPlayerStats {
+  if (!room.partyStats) room.partyStats = {}
+  if (!room.partyStats[playerId]) room.partyStats[playerId] = emptyPartyStats()
+  return room.partyStats[playerId]
+}
+
 function emptyGameFields(): Pick<
   Room,
   | 'phaseEndsAt'
@@ -124,6 +147,13 @@ function emptyGameFields(): Pick<
   | 'nightPath'
   | 'nightPathVotes'
   | 'usedWords'
+  | 'callbackPool'
+  | 'rivalRuins'
+  | 'partyStats'
+  | 'awards'
+  | 'doublePoints'
+  | 'revengePlayerId'
+  | 'revengeSeed'
 > {
   return {
     phaseEndsAt: 0,
@@ -137,6 +167,13 @@ function emptyGameFields(): Pick<
     nightPath: null,
     nightPathVotes: 0,
     usedWords: [],
+    callbackPool: [],
+    rivalRuins: [],
+    partyStats: {},
+    awards: [],
+    doublePoints: false,
+    revengePlayerId: null,
+    revengeSeed: null,
   }
 }
 
@@ -178,6 +215,14 @@ export function restoreRooms(list: Room[]) {
       nightPath: raw.nightPath && typeof raw.nightPath === 'object' ? raw.nightPath : null,
       nightPathVotes: Number(raw.nightPathVotes) || 0,
       usedWords: Array.isArray(raw.usedWords) ? raw.usedWords : [],
+      callbackPool: Array.isArray(raw.callbackPool) ? raw.callbackPool : [],
+      rivalRuins: Array.isArray(raw.rivalRuins) ? raw.rivalRuins : [],
+      partyStats: raw.partyStats && typeof raw.partyStats === 'object' ? raw.partyStats : {},
+      seasonStats: raw.seasonStats && typeof raw.seasonStats === 'object' ? raw.seasonStats : {},
+      awards: Array.isArray(raw.awards) ? raw.awards : [],
+      doublePoints: Boolean(raw.doublePoints),
+      revengePlayerId: raw.revengePlayerId ?? null,
+      revengeSeed: raw.revengeSeed ?? null,
       notice: raw.notice ?? null,
       updatedAt: raw.updatedAt ?? Date.now(),
     }
@@ -276,6 +321,7 @@ export function createRoom(
     guessSeconds: GUESS_SECONDS,
     notice: null,
     updatedAt: Date.now(),
+    seasonStats: {},
     ...emptyGameFields(),
   }
 
@@ -586,6 +632,12 @@ function beginGuessPhase(room: Room) {
 }
 
 function startRoundInternal(room: Room) {
+  room.callbackPool ??= []
+  room.rivalRuins ??= []
+  room.partyStats ??= {}
+  room.seasonStats ??= {}
+  room.awards ??= []
+
   const order = connectedPlayers(room)
   if (order.length < MIN_PLAYERS) {
     return {
@@ -610,7 +662,32 @@ function startRoundInternal(room: Room) {
 
   const used = new Set(room.usedWords.map(normalizeWord))
   const words = dealWords(packForRoom(room), order.length, used)
+
+  // Inject up to one callback word from earlier fails (rounds 2+).
+  if (room.roundIndex >= 1 && room.callbackPool.length > 0 && words.length > 0) {
+    const callbacks = room.callbackPool.filter((w) => !used.has(normalizeWord(w)))
+    if (callbacks.length > 0) {
+      const pick = callbacks[Math.floor(Math.random() * callbacks.length)]
+      const slot = Math.floor(Math.random() * words.length)
+      used.delete(normalizeWord(words[slot]))
+      words[slot] = pick
+      used.add(normalizeWord(pick))
+    }
+  }
+
+  // Revenge seed replaces the revenge player's origin word.
+  if (room.revengePlayerId && room.revengeSeed) {
+    const ri = order.findIndex((p) => p.id === room.revengePlayerId)
+    if (ri >= 0) {
+      used.delete(normalizeWord(words[ri] ?? ''))
+      words[ri] = room.revengeSeed
+      used.add(normalizeWord(room.revengeSeed))
+    }
+  }
+
   room.usedWords = [...used]
+  room.revengePlayerId = null
+  room.revengeSeed = null
 
   room.paths = order.map((p, i) => ({
     id: crypto.randomUUID(),
@@ -619,14 +696,19 @@ function startRoundInternal(room: Room) {
     steps: [],
   }))
   room.hopIndex = 0
-  // First round is a warm-up: one hop so the party laughs faster.
+
+  const limitsLeft = limits.maxRounds - room.roundIndex
+  const isSuddenDeath = limitsLeft === 1
+  const isWarmup = room.roundIndex === 0
   const fullHops = hopCountForPlayers(order.length)
-  room.hopCount = room.roundIndex === 0 ? Math.min(1, fullHops) : fullHops
+  room.hopCount = isWarmup || isSuddenDeath ? Math.min(1, fullHops) : fullHops
+  room.doublePoints = isSuddenDeath
   room.funnyVotes = {}
   room.submissions = {}
   room.roundIndex += 1
   for (const p of order) {
     if (room.scores[p.id] === undefined) room.scores[p.id] = 0
+    ensurePartyStats(room, p.id)
   }
   beginEmojiPhase(room)
   touch(room)
@@ -641,11 +723,7 @@ export function startGame(code: string, playerId: string): Room | { error: strin
     return { error: roomMsg(room, 'Spelet pågår redan', 'Game already in progress') }
   }
   if (room.status === 'finished') {
-    room.scores = {}
-    room.roundIndex = 0
-    room.usedWords = []
-    room.nightPath = null
-    room.nightPathVotes = 0
+    Object.assign(room, emptyGameFields())
   }
   // Promote waitlist / clear spectators when starting from lobby
   if (room.status === 'lobby') {
@@ -672,8 +750,180 @@ export function endParty(code: string, playerId: string): Room | { error: string
   room.status = 'finished'
   room.phaseEndsAt = 0
   room.isPublic = false
+  room.awards = computeAwards(room)
   touch(room)
   return room
+}
+
+export function rematch(code: string, playerId: string): Room | { error: string } {
+  const room = rooms.get(code)
+  if (!room) return { error: 'Rum saknas' }
+  if (room.hostId !== playerId) return { error: 'Bara värden' }
+  if (room.status !== 'finished' && room.status !== 'scoreboard') {
+    return { error: roomMsg(room, 'Kan bara rematcha efter festen', 'Rematch only after the party') }
+  }
+  rollSeasonStats(room)
+  Object.assign(room, emptyGameFields())
+  for (const p of room.players) p.spectator = false
+  promoteWaitlist(room)
+  return startRoundInternal(room)
+}
+
+export function submitRevengeSeed(
+  code: string,
+  playerId: string,
+  rawWord: string,
+): Room | { error: string } {
+  const room = rooms.get(code)
+  if (!room) return { error: 'Rum saknas' }
+  if (room.status !== 'scoreboard') {
+    return { error: roomMsg(room, 'Bara på poängtavlan', 'Only on the scoreboard') }
+  }
+  if (room.revengePlayerId !== playerId) {
+    return { error: roomMsg(room, 'Du har ingen hämnd just nu', 'You do not have revenge right now') }
+  }
+  const word = normalizeWord(rawWord).slice(0, 32)
+  if (word.length < 2) {
+    return { error: roomMsg(room, 'Ordet är för kort', 'Word is too short') }
+  }
+  room.revengeSeed = word
+  touch(room)
+  return room
+}
+
+function rollSeasonStats(room: Room) {
+  const ranked = seatedPlayers(room)
+    .map((p) => ({ id: p.id, score: room.scores[p.id] ?? 0 }))
+    .sort((a, b) => b.score - a.score)
+  const winnerId = ranked[0]?.id
+  for (const p of room.players) {
+    if (p.id === room.hostId) continue
+    const score = room.scores[p.id] ?? 0
+    const ps = room.partyStats[p.id] ?? emptyPartyStats()
+    const prev = room.seasonStats[p.id] ?? {
+      partiesPlayed: 0,
+      totalScore: 0,
+      wins: 0,
+      ruinsDealt: 0,
+      funnyVotesReceived: 0,
+    }
+    room.seasonStats[p.id] = {
+      partiesPlayed: prev.partiesPlayed + 1,
+      totalScore: prev.totalScore + score,
+      wins: prev.wins + (p.id === winnerId ? 1 : 0),
+      ruinsDealt: prev.ruinsDealt + ps.ruinsDealt,
+      funnyVotesReceived: prev.funnyVotesReceived + ps.funnyVotesReceived,
+    }
+  }
+}
+
+function computeAwards(room: Room): Award[] {
+  const awards: Award[] = []
+  const players = seatedPlayers(room).filter((p) => p.id !== room.hostId)
+  if (players.length === 0) return awards
+
+  const byScore = [...players].sort((a, b) => (room.scores[b.id] ?? 0) - (room.scores[a.id] ?? 0))
+  const champ = byScore[0]
+  if (champ) {
+    awards.push({
+      id: 'champion',
+      playerId: champ.id,
+      labelSv: 'Kvällens mästare',
+      labelEn: 'Party champion',
+      detailSv: `${room.scores[champ.id] ?? 0} poäng`,
+      detailEn: `${room.scores[champ.id] ?? 0} points`,
+    })
+  }
+
+  const saboteur = [...players].sort(
+    (a, b) =>
+      (room.partyStats[b.id]?.ruinsDealt ?? 0) - (room.partyStats[a.id]?.ruinsDealt ?? 0),
+  )[0]
+  if (saboteur && (room.partyStats[saboteur.id]?.ruinsDealt ?? 0) > 0) {
+    awards.push({
+      id: 'saboteur',
+      playerId: saboteur.id,
+      labelSv: 'Sabotör #1',
+      labelEn: 'Saboteur #1',
+      detailSv: `${room.partyStats[saboteur.id].ruinsDealt} förstörda paths`,
+      detailEn: `${room.partyStats[saboteur.id].ruinsDealt} ruined paths`,
+    })
+  }
+
+  const funniest = [...players].sort(
+    (a, b) =>
+      (room.partyStats[b.id]?.funnyVotesReceived ?? 0) -
+      (room.partyStats[a.id]?.funnyVotesReceived ?? 0),
+  )[0]
+  if (funniest && (room.partyStats[funniest.id]?.funnyVotesReceived ?? 0) > 0) {
+    awards.push({
+      id: 'funniest',
+      playerId: funniest.id,
+      labelSv: 'Mest kaos',
+      labelEn: 'Most chaos',
+      detailSv: `${room.partyStats[funniest.id].funnyVotesReceived} funny-röster`,
+      detailEn: `${room.partyStats[funniest.id].funnyVotesReceived} funny votes`,
+    })
+  }
+
+  const savior = [...players].sort(
+    (a, b) =>
+      (room.partyStats[b.id]?.correctGuesses ?? 0) - (room.partyStats[a.id]?.correctGuesses ?? 0),
+  )[0]
+  if (savior && (room.partyStats[savior.id]?.correctGuesses ?? 0) > 0) {
+    awards.push({
+      id: 'savior',
+      playerId: savior.id,
+      labelSv: 'Bästa räddning',
+      labelEn: 'Best save',
+      detailSv: `${room.partyStats[savior.id].correctGuesses} rätt`,
+      detailEn: `${room.partyStats[savior.id].correctGuesses} correct`,
+    })
+  }
+
+  const poet = [...players].sort(
+    (a, b) => (room.partyStats[b.id]?.emojiChars ?? 0) - (room.partyStats[a.id]?.emojiChars ?? 0),
+  )[0]
+  if (poet && (room.partyStats[poet.id]?.emojiChars ?? 0) > 0) {
+    awards.push({
+      id: 'poet',
+      playerId: poet.id,
+      labelSv: 'Emoji-poet',
+      labelEn: 'Emoji poet',
+    })
+  }
+
+  const streaks = topRivalStreaks(room, 1)
+  if (streaks[0] && streaks[0].count >= 2) {
+    awards.push({
+      id: 'rival',
+      playerId: streaks[0].ruinerId,
+      labelSv: 'Ärkerival',
+      labelEn: 'Arch-rival',
+      detailSv: `${streaks[0].ruinerName} vs ${streaks[0].victimName} (${streaks[0].count}×)`,
+      detailEn: `${streaks[0].ruinerName} vs ${streaks[0].victimName} (${streaks[0].count}×)`,
+    })
+  }
+
+  return awards
+}
+
+function topRivalStreaks(room: Room, limit = 3): RivalStreakPublic[] {
+  const counts = new Map<string, { ruinerId: string; victimId: string; count: number }>()
+  for (const r of room.rivalRuins ?? []) {
+    const key = `${r.ruinerId}:${r.victimId}`
+    const cur = counts.get(key) ?? { ruinerId: r.ruinerId, victimId: r.victimId, count: 0 }
+    cur.count += 1
+    counts.set(key, cur)
+  }
+  return [...counts.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit)
+    .map((r) => ({
+      ...r,
+      ruinerName: playerName(room, r.ruinerId),
+      victimName: playerName(room, r.victimId),
+    }))
 }
 
 export function backToLobby(code: string, playerId: string): Room | { error: string } {
@@ -754,6 +1004,7 @@ export function submitEmojis(
     return { error: roomMsg(room, 'Skriv minst en emoji', 'Enter at least one emoji') }
   }
   room.submissions[playerId] = emojis
+  ensurePartyStats(room, playerId).emojiChars += [...emojis].length
   // Write onto the path step this player authors
   const order = seatedPlayers(room)
   const n = order.length
@@ -841,6 +1092,7 @@ function lockEmojis(room: Room) {
 }
 
 function lockGuesses(room: Room) {
+  const points = room.doublePoints ? CORRECT_POINTS * 2 : CORRECT_POINTS
   for (const path of room.paths) {
     const step = path.steps[room.hopIndex]
     if (!step) continue
@@ -849,8 +1101,30 @@ function lockGuesses(room: Room) {
     }
     step.correct = scoreGuess(step.meaning, step.guess)
     const submitted = room.submissions[step.guesserId] !== undefined
-    if (submitted && step.correct) {
-      applyCorrectPoints(room.scores, step.guesserId, true)
+    if (submitted) {
+      const stats = ensurePartyStats(room, step.guesserId)
+      if (step.correct) {
+        applyCorrectPoints(room.scores, step.guesserId, true, points)
+        stats.correctGuesses += 1
+      } else {
+        stats.wrongGuesses += 1
+        const victimId = victimForWrongGuess(path, room.hopIndex)
+        if (victimId && victimId !== step.guesserId) {
+          room.rivalRuins.push({
+            ruinerId: step.guesserId,
+            victimId,
+            pathId: path.id,
+            roundIndex: room.roundIndex,
+          })
+          ensurePartyStats(room, step.guesserId).ruinsDealt += 1
+          ensurePartyStats(room, victimId).ruinsSuffered += 1
+        }
+        const guess = normalizeWord(step.guess)
+        if (guess.length >= 2 && guess !== EMPTY_GUESS && !room.callbackPool.includes(guess)) {
+          room.callbackPool.push(guess)
+          if (room.callbackPool.length > 24) room.callbackPool.shift()
+        }
+      }
     }
   }
 
@@ -885,18 +1159,26 @@ export function advanceReveal(code: string, playerId: string): Room | { error: s
 }
 
 function lockFunnyVotes(room: Room) {
-  // Each vote → +10 to the last wrong guesser on that path.
-  applyFunnyVotePoints(room.scores, room.paths, room.funnyVotes)
+  const pointsPerVote = room.doublePoints ? FUNNY_VOTE_POINTS * 2 : FUNNY_VOTE_POINTS
+  applyFunnyVotePoints(room.scores, room.paths, room.funnyVotes, pointsPerVote)
 
   const winners = tallyFunnyVotes(room.funnyVotes)
+  const tally = Object.values(room.funnyVotes).reduce(
+    (acc, id) => {
+      acc[id] = (acc[id] ?? 0) + 1
+      return acc
+    },
+    {} as Record<string, number>,
+  )
+
+  for (const [pathId, count] of Object.entries(tally)) {
+    const path = room.paths.find((p) => p.id === pathId)
+    if (!path) continue
+    const recipient = lastWrongGuesser(path)
+    if (recipient) ensurePartyStats(room, recipient).funnyVotesReceived += count
+  }
+
   if (winners.length > 0) {
-    const tally = Object.values(room.funnyVotes).reduce(
-      (acc, id) => {
-        acc[id] = (acc[id] ?? 0) + 1
-        return acc
-      },
-      {} as Record<string, number>,
-    )
     const bestVotes = Math.max(...winners.map((id) => tally[id] ?? 0))
     if (bestVotes > room.nightPathVotes) {
       const pub = publicPaths(room).find((p) => p.id === winners[0])
@@ -904,6 +1186,12 @@ function lockFunnyVotes(room: Room) {
         room.nightPath = pub
         room.nightPathVotes = bestVotes
       }
+    }
+    // Revenge: last wrong guesser on the funniest path picks next seed.
+    const winPath = room.paths.find((p) => p.id === winners[0])
+    if (winPath) {
+      room.revengePlayerId = lastWrongGuesser(winPath)
+      room.revengeSeed = null
     }
   }
 
@@ -1063,5 +1351,19 @@ export function toPublicRoom(room: Room, viewerId?: string | null): PublicRoom {
     youAreSpectator: Boolean(viewer?.spectator),
     youAreHost: Boolean(viewer && viewer.id === room.hostId),
     maxRounds: limits.maxRounds,
+    doublePoints: Boolean(room.doublePoints),
+    suddenDeath: Boolean(room.doublePoints),
+    revengePlayerId: room.revengePlayerId ?? null,
+    revengeSeed: room.revengeSeed ?? null,
+    youHaveRevenge: Boolean(viewerId && room.revengePlayerId === viewerId),
+    awards: Array.isArray(room.awards) ? room.awards : [],
+    rivalStreaks: topRivalStreaks(room, 3),
+    seasonStats: Object.entries(room.seasonStats ?? {}).map(([playerId, s]) => ({
+      playerId,
+      name: playerName(room, playerId),
+      partiesPlayed: s.partiesPlayed,
+      totalScore: s.totalScore,
+      wins: s.wins,
+    })),
   }
 }

@@ -192,6 +192,14 @@ export async function backToLobby() {
   return ack<{ ok: boolean; error?: string; room?: PublicRoom }>('backToLobby', {})
 }
 
+export async function rematch() {
+  return ack<{ ok: boolean; error?: string; room?: PublicRoom }>('rematch', {})
+}
+
+export async function submitRevengeSeed(word: string) {
+  return ack<{ ok: boolean; error?: string; room?: PublicRoom }>('submitRevengeSeed', { word })
+}
+
 export async function submitEmojis(emojis: string) {
   return ack<{ ok: boolean; error?: string; room?: PublicRoom }>('submitEmojis', { emojis })
 }

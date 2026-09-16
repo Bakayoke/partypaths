@@ -105,6 +105,12 @@ export function applyCorrectPoints(
   scores[guesserId] = (scores[guesserId] ?? 0) + points
 }
 
+/** Who "owned" the meaning that was just guessed — origin on hop 0, else previous guesser. */
+export function victimForWrongGuess(path: GamePath, hopIndex: number): string {
+  if (hopIndex <= 0) return path.originPlayerId
+  return path.steps[hopIndex - 1]?.guesserId || path.originPlayerId
+}
+
 export function wrongStepContributors(path: GamePath): string[] {
   const ids = new Set<string>()
   for (const step of path.steps) {
