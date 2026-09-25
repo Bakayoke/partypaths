@@ -1,5 +1,7 @@
 export type Lang = 'sv' | 'en'
 
+export type WordTheme = 'fest' | 'adult' | 'jobb' | 'familj'
+
 export type PremiumTier = 'free' | 'party'
 
 export type PremiumLimits = {
@@ -100,6 +102,9 @@ export type Room = {
   premiumExpiresAt: number | null
   isPublic: boolean
   waitlist: { id: string; name: string; at: number }[]
+  /** Host joins the game instead of TV-only */
+  hostPlays: boolean
+  wordTheme: WordTheme
   emojiSeconds: number
   guessSeconds: number
   phaseEndsAt: number
@@ -155,6 +160,8 @@ export type PublicRoom = {
   limits: PremiumLimits
   isPublic: boolean
   waitlist: { id: string; name: string; at: number }[]
+  hostPlays: boolean
+  wordTheme: WordTheme
   emojiSeconds: number
   guessSeconds: number
   phaseEndsAt: number

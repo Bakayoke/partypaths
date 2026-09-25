@@ -1,4 +1,5 @@
 export type Lang = 'sv' | 'en'
+export type WordTheme = 'fest' | 'adult' | 'jobb' | 'familj'
 export type RoomStatus =
   | 'lobby'
   | 'emoji'
@@ -61,6 +62,8 @@ export type PublicRoom = {
   limits: { maxPlayers: number; maxRounds: number; freePack: boolean }
   isPublic: boolean
   waitlist: { id: string; name: string; at: number }[]
+  hostPlays: boolean
+  wordTheme: WordTheme
   emojiSeconds: number
   guessSeconds: number
   phaseEndsAt: number

@@ -45,6 +45,8 @@ import {
   setPhaseTimers,
   setPublicLobby,
   listPublicLobbies,
+  setHostPlays,
+  setWordTheme,
   startGame,
   submitEmojis,
   submitGuess,
@@ -249,6 +251,24 @@ io.on('connection', (socket) => {
     const binding = bindingFrom(payload)
     if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
     const result = setPublicLobby(binding.code, binding.playerId, Boolean(payload?.isPublic))
+    if ('error' in result) return ack?.({ ok: false, error: result.error })
+    ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
+    broadcastRoom(result.code)
+  })
+
+  socket.on('setHostPlays', (payload, ack) => {
+    const binding = bindingFrom(payload)
+    if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
+    const result = setHostPlays(binding.code, binding.playerId, Boolean(payload?.hostPlays))
+    if ('error' in result) return ack?.({ ok: false, error: result.error })
+    ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
+    broadcastRoom(result.code)
+  })
+
+  socket.on('setWordTheme', (payload, ack) => {
+    const binding = bindingFrom(payload)
+    if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
+    const result = setWordTheme(binding.code, binding.playerId, String(payload?.theme ?? 'fest'))
     if ('error' in result) return ack?.({ ok: false, error: result.error })
     ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
     broadcastRoom(result.code)

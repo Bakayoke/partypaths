@@ -539,6 +539,17 @@ textarea:focus {
   width: 100%;
 }
 
+.sister-games .sister-more {
+  margin: 0 0 0.35rem;
+  grid-column: 1 / -1;
+}
+
+.timer {
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--sun);
+}
+
 .sister-games.compact {
   margin-top: 0.85rem;
 }

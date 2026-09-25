@@ -43,6 +43,15 @@ const HOST_TRANSFER_AFTER_MS = 90_000
 const ROOM_IDLE_MS = 12 * 60 * 60 * 1000
 const NOTICE_TTL_MS = 45_000
 const SCOREBOARD_MS = 0
+const REVEAL_SECONDS = 18
+const FUNNY_VOTE_SECONDS = 25
+
+const WORD_THEMES = new Set(['fest', 'adult', 'jobb', 'familj'])
+
+function normalizeTheme(raw: unknown): import('./types.js').WordTheme {
+  const t = String(raw ?? 'fest')
+  return WORD_THEMES.has(t) ? (t as import('./types.js').WordTheme) : 'fest'
+}
 
 const rooms = new Map<string, Room>()
 const socketToPlayer = new Map<string, { code: string; playerId: string }>()
@@ -101,7 +110,7 @@ function uniqueCode(): string {
 
 function isActivePlayer(room: Room, p: Player): boolean {
   if (p.spectator) return false
-  if (p.id === room.hostId) return false
+  if (p.id === room.hostId && !room.hostPlays) return false
   return true
 }
 
@@ -202,6 +211,8 @@ export function restoreRooms(list: Room[]) {
       premiumExpiresAt: raw.premiumExpiresAt ?? null,
       isPublic: Boolean(raw.isPublic),
       waitlist: Array.isArray(raw.waitlist) ? raw.waitlist : [],
+      hostPlays: Boolean(raw.hostPlays),
+      wordTheme: normalizeTheme(raw.wordTheme),
       emojiSeconds: Number(raw.emojiSeconds) || EMOJI_SECONDS,
       guessSeconds: Number(raw.guessSeconds) || GUESS_SECONDS,
       phaseEndsAt: Number(raw.phaseEndsAt) || 0,
@@ -317,6 +328,8 @@ export function createRoom(
     premiumExpiresAt: null,
     isPublic: Boolean(wantPublic),
     waitlist: [],
+    hostPlays: false,
+    wordTheme: 'fest',
     emojiSeconds: EMOJI_SECONDS,
     guessSeconds: GUESS_SECONDS,
     notice: null,
@@ -579,6 +592,34 @@ export function setPublicLobby(
   return room
 }
 
+export function setHostPlays(
+  code: string,
+  playerId: string,
+  hostPlays: boolean,
+): Room | { error: string } {
+  const room = rooms.get(code)
+  if (!room) return { error: 'Rum saknas' }
+  if (room.hostId !== playerId) return { error: 'Bara värden kan ändra' }
+  if (room.status !== 'lobby') return { error: 'Kan bara ändras i lobbyn' }
+  room.hostPlays = Boolean(hostPlays)
+  touch(room)
+  return room
+}
+
+export function setWordTheme(
+  code: string,
+  playerId: string,
+  theme: string,
+): Room | { error: string } {
+  const room = rooms.get(code)
+  if (!room) return { error: 'Rum saknas' }
+  if (room.hostId !== playerId) return { error: 'Bara värden kan ändra' }
+  if (room.status !== 'lobby') return { error: 'Kan bara ändras i lobbyn' }
+  room.wordTheme = normalizeTheme(theme)
+  touch(room)
+  return room
+}
+
 export function setPhaseTimers(
   code: string,
   playerId: string,
@@ -602,24 +643,23 @@ export function setPhaseTimers(
 }
 
 function packForRoom(room: Room): string[] {
-  return wordPack(room.language)
+  return wordPack(room.language, room.wordTheme ?? 'fest')
 }
 
 function beginEmojiPhase(room: Room) {
   room.status = 'emoji'
   room.submissions = {}
-  room.phaseEndsAt = 0
-  // Prepare empty step shells for this hop
+  room.phaseEndsAt = Date.now() + room.emojiSeconds * 1000
+  // create empty steps for this hop
   const order = seatedPlayers(room)
   const n = order.length
   for (let oi = 0; oi < room.paths.length; oi++) {
     const path = room.paths[oi]
     const author = order[authorIndexForHop(oi, room.hopIndex, n)]
     const guesser = order[guesserIndexForHop(oi, room.hopIndex, n)]
-    const meaning = meaningForHop(path, room.hopIndex)
     path.steps[room.hopIndex] = createEmptyStep({
       authorId: author.id,
-      meaning,
+      meaning: meaningForHop(path, room.hopIndex),
       guesserId: guesser.id,
     })
   }
@@ -628,7 +668,7 @@ function beginEmojiPhase(room: Room) {
 function beginGuessPhase(room: Room) {
   room.status = 'guess'
   room.submissions = {}
-  room.phaseEndsAt = 0
+  room.phaseEndsAt = Date.now() + room.guessSeconds * 1000
 }
 
 function startRoundInternal(room: Room) {
@@ -996,8 +1036,8 @@ export function submitEmojis(
   if (!room) return { error: 'Rum saknas' }
   if (room.status !== 'emoji') return { error: roomMsg(room, 'Inte emoji-fas', 'Not emoji phase') }
   const player = room.players.find((p) => p.id === playerId)
-  if (!player || player.spectator || player.id === room.hostId) {
-    return { error: roomMsg(room, 'Värden deltar inte', 'Host does not play') }
+  if (!player || player.spectator || (player.id === room.hostId && !room.hostPlays)) {
+    return { error: roomMsg(room, 'Du spelar inte just nu', 'You are not playing right now') }
   }
   const emojis = sanitizeEmojis(emojisRaw)
   if (!emojis) {
@@ -1029,8 +1069,8 @@ export function submitGuess(
   if (!room) return { error: 'Rum saknas' }
   if (room.status !== 'guess') return { error: roomMsg(room, 'Inte gissningsfas', 'Not guess phase') }
   const player = room.players.find((p) => p.id === playerId)
-  if (!player || player.spectator || player.id === room.hostId) {
-    return { error: roomMsg(room, 'Värden deltar inte', 'Host does not play') }
+  if (!player || player.spectator || (player.id === room.hostId && !room.hostPlays)) {
+    return { error: roomMsg(room, 'Du spelar inte just nu', 'You are not playing right now') }
   }
   const guess = normalizeWord(guessRaw).slice(0, 48) || EMPTY_GUESS
   room.submissions[playerId] = guess
@@ -1062,8 +1102,8 @@ export function voteFunny(
     return { error: roomMsg(room, 'Inte röstningsfas', 'Not voting phase') }
   }
   const player = room.players.find((p) => p.id === playerId)
-  if (!player || player.spectator || player.id === room.hostId) {
-    return { error: roomMsg(room, 'Värden deltar inte', 'Host does not play') }
+  if (!player || player.spectator || (player.id === room.hostId && !room.hostPlays)) {
+    return { error: roomMsg(room, 'Du spelar inte just nu', 'You are not playing right now') }
   }
   const path = room.paths.find((p) => p.id === pathId)
   if (!path) return { error: 'Ogiltig path' }
@@ -1134,7 +1174,7 @@ function lockGuesses(room: Room) {
   } else {
     room.status = 'reveal'
     room.submissions = {}
-    room.phaseEndsAt = 0
+    room.phaseEndsAt = Date.now() + REVEAL_SECONDS * 1000
   }
   touch(room)
 }
@@ -1143,7 +1183,7 @@ function enterFunnyVote(room: Room) {
   room.status = 'funny_vote'
   room.submissions = {}
   room.funnyVotes = {}
-  room.phaseEndsAt = 0
+  room.phaseEndsAt = Date.now() + FUNNY_VOTE_SECONDS * 1000
   touch(room)
 }
 
@@ -1201,12 +1241,29 @@ function lockFunnyVotes(room: Room) {
   touch(room)
 }
 
-export function onPhaseTimeout(_room: Room) {
-  // Phases advance only when all active players have submitted (no timers).
+export function onPhaseTimeout(room: Room) {
+  if (room.status === 'emoji') lockEmojis(room)
+  else if (room.status === 'guess') lockGuesses(room)
+  else if (room.status === 'reveal') enterFunnyVote(room)
+  else if (room.status === 'funny_vote') lockFunnyVotes(room)
 }
 
 export function roomsNeedingTick(): Room[] {
-  return []
+  const now = Date.now()
+  const out: Room[] = []
+  for (const room of rooms.values()) {
+    if (
+      room.phaseEndsAt > 0 &&
+      now >= room.phaseEndsAt &&
+      (room.status === 'emoji' ||
+        room.status === 'guess' ||
+        room.status === 'reveal' ||
+        room.status === 'funny_vote')
+    ) {
+      out.push(room)
+    }
+  }
+  return out
 }
 
 export function pruneIdleRooms() {
@@ -1328,6 +1385,8 @@ export function toPublicRoom(room: Room, viewerId?: string | null): PublicRoom {
     limits,
     isPublic: Boolean(room.isPublic),
     waitlist: room.waitlist,
+    hostPlays: Boolean(room.hostPlays),
+    wordTheme: room.wordTheme ?? 'fest',
     emojiSeconds: room.emojiSeconds,
     guessSeconds: room.guessSeconds,
     phaseEndsAt: room.phaseEndsAt,

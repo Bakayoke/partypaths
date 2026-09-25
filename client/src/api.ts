@@ -231,6 +231,14 @@ export async function setPublicLobby(isPublic: boolean) {
   return ack<{ ok: boolean; error?: string; room?: PublicRoom }>('setPublicLobby', { isPublic })
 }
 
+export async function setHostPlays(hostPlays: boolean) {
+  return ack<{ ok: boolean; error?: string; room?: PublicRoom }>('setHostPlays', { hostPlays })
+}
+
+export async function setWordTheme(theme: string) {
+  return ack<{ ok: boolean; error?: string; room?: PublicRoom }>('setWordTheme', { theme })
+}
+
 export type HealthInfo = {
   ok: boolean
   rooms?: number

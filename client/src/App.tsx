@@ -15,9 +15,12 @@ import {
   rejoinGame,
   rematch,
   saveSession,
+  setHostPlays,
   setLanguage as setRoomLanguage,
+  setPhaseTimers,
   setPublicLobby,
   setRoomHandler,
+  setWordTheme,
   startGame,
   submitEmojis,
   submitGuess,
@@ -31,6 +34,7 @@ import {
 import { loadLanguage, rememberLanguage, t } from './i18n'
 import { JoinQr } from './qr'
 import { sharePathCard } from './sharePath'
+import { playTvSting, stingForStatus } from './tvAudio'
 import type { Lang, PublicPath, PublicRoom } from './types'
 
 const FACTOPIA_URL = 'https://factopia.net'
@@ -68,58 +72,73 @@ function SisterGameLink({
   )
 }
 
-function SisterGameLinks({ ui, compact }: { ui: ReturnType<typeof t>; compact?: boolean }) {
+function SisterGameLinks({
+  ui,
+  compact,
+  spotlight = false,
+}: {
+  ui: ReturnType<typeof t>
+  compact?: boolean
+  spotlight?: boolean
+}) {
+  const all = [
+    {
+      name: 'Factopia',
+      href: FACTOPIA_URL,
+      pitch: ui.factopiaPitch,
+      cta: ui.factopiaCta,
+    },
+    {
+      name: 'Klotterkaos',
+      href: KLOTTERKAOS_URL,
+      pitch: ui.klotterkaosPitch,
+      cta: ui.klotterkaosCta,
+    },
+    {
+      name: 'Sabotext',
+      href: SABOTEXT_URL,
+      pitch: ui.sabotextPitch,
+      cta: ui.sabotextCta,
+    },
+    {
+      name: 'Scourgeborn',
+      href: SCOURGEBORN_URL,
+      pitch: ui.scourgebornPitch,
+      cta: ui.scourgebornCta,
+    },
+    {
+      name: 'Your Task Is',
+      href: YOURTASKIS_URL,
+      pitch: ui.yourtaskisPitch,
+      cta: ui.yourtaskisCta,
+    },
+    {
+      name: 'Kluddkrig',
+      href: KLUDDKRIG_URL,
+      pitch: ui.kluddkrigPitch,
+      cta: ui.kluddkrigCta,
+    },
+    {
+      name: 'Pulsekaos',
+      href: PULSEKAOS_URL,
+      pitch: ui.pulsekaosPitch,
+      cta: ui.pulsekaosCta,
+    },
+  ]
+  const links = spotlight ? all.slice(0, 2) : all
   return (
     <div className={`sister-games${compact ? ' compact' : ''}`}>
-      <SisterGameLink
-        name="Factopia"
-        href={FACTOPIA_URL}
-        pitch={ui.factopiaPitch}
-        cta={ui.factopiaCta}
-        compact={compact}
-      />
-      <SisterGameLink
-        name="Sabotext"
-        href={SABOTEXT_URL}
-        pitch={ui.sabotextPitch}
-        cta={ui.sabotextCta}
-        compact={compact}
-      />
-      <SisterGameLink
-        name="Scourgeborn"
-        href={SCOURGEBORN_URL}
-        pitch={ui.scourgebornPitch}
-        cta={ui.scourgebornCta}
-        compact={compact}
-      />
-      <SisterGameLink
-        name="Your Task Is"
-        href={YOURTASKIS_URL}
-        pitch={ui.yourtaskisPitch}
-        cta={ui.yourtaskisCta}
-        compact={compact}
-      />
-      <SisterGameLink
-        name="Klotterkaos"
-        href={KLOTTERKAOS_URL}
-        pitch={ui.klotterkaosPitch}
-        cta={ui.klotterkaosCta}
-        compact={compact}
-      />
-      <SisterGameLink
-        name="Kluddkrig"
-        href={KLUDDKRIG_URL}
-        pitch={ui.kluddkrigPitch}
-        cta={ui.kluddkrigCta}
-        compact={compact}
-      />
-      <SisterGameLink
-        name="Pulsekaos"
-        href={PULSEKAOS_URL}
-        pitch={ui.pulsekaosPitch}
-        cta={ui.pulsekaosCta}
-        compact={compact}
-      />
+      {spotlight && <p className="muted sister-more">{ui.sisterMore}</p>}
+      {links.map((l) => (
+        <SisterGameLink
+          key={l.name}
+          name={l.name}
+          href={l.href}
+          pitch={l.pitch}
+          cta={l.cta}
+          compact={compact}
+        />
+      ))}
     </div>
   )
 }
@@ -428,7 +447,7 @@ export default function App() {
               {ui.findGame}
             </button>
           </div>
-          <SisterGameLinks ui={ui} />
+          <SisterGameLinks ui={ui} spotlight />
           <p className="muted">{ui.freeTier}</p>
         </div>
       )}
@@ -611,13 +630,37 @@ function PlayView({
   const [guessDraft, setGuessDraft] = useState('')
   const [revengeDraft, setRevengeDraft] = useState('')
   const [shareNote, setShareNote] = useState<string | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const joinUrl = `https://partypaths.com/?join=${room.code}`
   const inLobby = room.status === 'lobby'
   const activeCount = room.players.filter(
-    (p) => p.connected && !p.spectator && p.id !== room.hostId,
+    (p) =>
+      p.connected &&
+      !p.spectator &&
+      (p.id !== room.hostId || room.hostPlays),
   ).length
-  const isHostOnly = isHost
-  const canPlay = !room.youAreSpectator && !isHostOnly
+  const canPlay = !room.youAreSpectator && (!isHost || room.hostPlays)
+
+  const secondsLeft =
+    room.phaseEndsAt > 0 &&
+    (room.status === 'emoji' ||
+      room.status === 'guess' ||
+      room.status === 'reveal' ||
+      room.status === 'funny_vote')
+      ? Math.max(0, Math.ceil((room.phaseEndsAt - now) / 1000))
+      : null
+
+  useEffect(() => {
+    if (!room.phaseEndsAt) return
+    const id = setInterval(() => setNow(Date.now()), 250)
+    return () => clearInterval(id)
+  }, [room.phaseEndsAt, room.status])
+
+  useEffect(() => {
+    if (!tvMode) return
+    const kind = room.suddenDeath && room.status === 'emoji' ? 'sudden' : stingForStatus(room.status)
+    if (kind) playTvSting(kind)
+  }, [room.status, tvMode, room.suddenDeath])
 
   const roundFunnyWinners = (() => {
     const votes = room.funnyVotes
@@ -738,14 +781,14 @@ function PlayView({
           {(room.status === 'reveal' ||
             room.status === 'funny_vote' ||
             room.status === 'scoreboard' ||
-            room.status === 'finished') && (
+            (room.status === 'finished' && Boolean(opts?.shareTitle))) && (
             <button
               type="button"
               className="btn btn-ghost btn-small"
               disabled={busy}
               onClick={() => void onSharePath(path, opts?.shareTitle)}
             >
-              {ui.sharePath}
+              {opts?.shareTitle ? ui.shareNightPath : ui.sharePath}
             </button>
           )}
         </div>
@@ -818,7 +861,12 @@ function PlayView({
       <p className="muted hide-on-tv">{ui.shareHint}</p>
       <p className="muted hide-on-tv">{ui.freeTier}</p>
       {room.youAreSpectator && <div className="player-hint">{ui.spectatorHint}</div>}
-      {isHost && <div className="player-hint ok hide-on-tv">{ui.hostHint}</div>}
+      {isHost && !room.hostPlays && <div className="player-hint ok hide-on-tv">{ui.hostHint}</div>}
+      {isHost && room.hostPlays && (
+        <div className="player-hint ok hide-on-tv">
+          {uiLang === 'en' ? 'You are host and playing along.' : 'Du är värd och spelar med.'}
+        </div>
+      )}
 
       {inLobby && tvMode && (
         <div className="tv-only tv-lobby-stage">
@@ -899,9 +947,10 @@ function PlayView({
             {room.players.map((p) => {
               const isHostRow = p.id === room.hostId
               const submitted = (room.submittedIds ?? []).includes(p.id)
+              const plays =
+                !p.spectator && (!isHostRow || room.hostPlays)
               const needsSubmit =
-                !isHostRow &&
-                !p.spectator &&
+                plays &&
                 (room.status === 'emoji' ||
                   room.status === 'guess' ||
                   room.status === 'funny_vote')
@@ -909,10 +958,12 @@ function PlayView({
               if (needsSubmit && p.connected) {
                 status = submitted ? ui.statusReady : ui.statusWaiting
               }
-              const role = isHostRow
-                ? ui.roleHost
-                : p.spectator
-                  ? ui.roleSpectator
+              const role = p.spectator
+                ? ui.roleSpectator
+                : isHostRow
+                  ? room.hostPlays
+                    ? `${ui.roleHost} + ${ui.rolePlayer}`
+                    : ui.roleHost
                   : ui.rolePlayer
               return (
                 <tr
@@ -970,6 +1021,71 @@ function PlayView({
                   {ui.openLobbyOn}
                 </button>
               </div>
+              <p className="muted">{uiLang === 'en' ? 'Host mode' : 'Värdläge'}</p>
+              <div className="mode-grid" style={{ marginBottom: '0.75rem' }}>
+                <button
+                  type="button"
+                  className={`btn btn-ghost${!room.hostPlays ? ' selected-mode' : ''}`}
+                  disabled={busy}
+                  onClick={() => void run(() => setHostPlays(false))}
+                >
+                  {ui.hostPlaysOff}
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-ghost${room.hostPlays ? ' selected-mode' : ''}`}
+                  disabled={busy}
+                  onClick={() => void run(() => setHostPlays(true))}
+                >
+                  {ui.hostPlaysOn}
+                </button>
+              </div>
+              <p className="muted">{ui.themeLabel}</p>
+              <div className="mode-grid" style={{ marginBottom: '0.75rem' }}>
+                {(
+                  [
+                    ['fest', ui.themeFest],
+                    ['adult', ui.themeAdult],
+                    ['jobb', ui.themeJobb],
+                    ['familj', ui.themeFamilj],
+                  ] as const
+                ).map(([theme, label]) => (
+                  <button
+                    key={theme}
+                    type="button"
+                    className={`btn btn-ghost btn-small${room.wordTheme === theme ? ' selected-mode' : ''}`}
+                    disabled={busy}
+                    onClick={() => void run(() => setWordTheme(theme))}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="muted">{ui.timerLabel}</p>
+              <div className="row" style={{ marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.35rem' }}>
+                {[20, 35, 50].map((s) => (
+                  <button
+                    key={`e${s}`}
+                    type="button"
+                    className={`btn btn-ghost btn-small${room.emojiSeconds === s ? ' selected-mode' : ''}`}
+                    disabled={busy}
+                    onClick={() => void run(() => setPhaseTimers(s, undefined))}
+                  >
+                    {ui.emojiTime} {s}{ui.seconds}
+                  </button>
+                ))}
+                {[15, 25, 40].map((s) => (
+                  <button
+                    key={`g${s}`}
+                    type="button"
+                    className={`btn btn-ghost btn-small${room.guessSeconds === s ? ' selected-mode' : ''}`}
+                    disabled={busy}
+                    onClick={() => void run(() => setPhaseTimers(undefined, s))}
+                  >
+                    {ui.guessTime} {s}{ui.seconds}
+                  </button>
+                ))}
+              </div>
               <div className="row" style={{ marginBottom: '0.75rem' }}>
                 <button
                   type="button"
@@ -1017,6 +1133,12 @@ function PlayView({
               <>
                 {' · '}
                 {ui.hopOf} {room.hopIndex + 1}/{room.hopCount}
+              </>
+            )}
+            {secondsLeft !== null && (
+              <>
+                {' · '}
+                <span className="timer">{secondsLeft}{ui.seconds} {ui.secondsLeft}</span>
               </>
             )}
           </p>
@@ -1304,7 +1426,7 @@ function PlayView({
                   </button>
                 </div>
               )}
-              <SisterGameLinks ui={ui} compact />
+              <SisterGameLinks ui={ui} compact spotlight />
             </>
           )}
         </>

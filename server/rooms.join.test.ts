@@ -70,4 +70,16 @@ describe('lobby joins', () => {
     assert.equal(again.playerId, first.playerId)
     assert.equal(room.players.filter((p) => p.name === 'Ada').length, 1)
   })
+
+  it('starts with host playing along + one guest', () => {
+    const { room, playerId: hostId } = createRoom('Host', 'sock-host-play', 'sv')
+    const code = room.code
+    room.hostPlays = true
+    assert.ok(!('error' in joinRoom(code, 'Ada', 'sock-ada-play')))
+    const started = startGame(code, hostId)
+    assert.ok(
+      !('error' in started),
+      `start should work with host playing + 1 guest: ${'error' in started ? started.error : ''}`,
+    )
+  })
 })

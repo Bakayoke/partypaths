@@ -1,7 +1,7 @@
 import type { PathStep, GamePath } from '../types.js'
 
 export const HOP_COUNT = 3
-/** Non-host players required to start. Host presents on TV and does not count. */
+/** Non-host players required to start when host is TV-only. Host counts when hostPlays. */
 export const MIN_PLAYERS = 2
 export const MAX_EMOJIS = 8
 export const EMOJI_SECONDS = 35
