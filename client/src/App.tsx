@@ -43,7 +43,7 @@ const SCOURGEBORN_URL = 'https://scourgeborn.com'
 const YOURTASKIS_URL = 'https://yourtaskis.com'
 const KLOTTERKAOS_URL = 'https://klotterkaos.com'
 const KLUDDKRIG_URL = 'https://kluddkrig.com'
-const PULSEKAOS_URL = 'https://pulsekaos.com'
+const PULSEKAOS_URL = 'https://pulskaos.com'
 
 function SisterGameLink({
   name,
@@ -119,7 +119,7 @@ function SisterGameLinks({
       cta: ui.kluddkrigCta,
     },
     {
-      name: 'Pulsekaos',
+      name: 'Pulskaos',
       href: PULSEKAOS_URL,
       pitch: ui.pulsekaosPitch,
       cta: ui.pulsekaosCta,
