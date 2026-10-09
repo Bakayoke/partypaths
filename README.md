@@ -33,9 +33,20 @@ npm run dev
 4. Sätt även:
    - `PUBLIC_APP_URL=https://partypaths.com`
    - `CORS_ORIGIN=https://partypaths.com,https://www.partypaths.com`
+   - `ADMIN_STATS_TOKEN=<samma hemliga token som dina andra spel>`
 5. Verifiera: `GET /api/health` → `persist.configured: true`.
 
 Utan Redis försvinner rum vid restart. Alternativ: volume + `PARTYPATHS_DATA_DIR=/data`.
+
+### Admin-statistik
+
+Startade spel per kalenderdag (Stockholm), ackumuleras i Redis (eller fil/minne). Räknar `startGame` och `rematch`, inte nästa runda.
+
+```
+https://<railway-url>/api/admin/stats?token=<ADMIN_STATS_TOKEN>&format=html
+```
+
+JSON utan `format=html`. Token kan också skickas som `x-admin-token` eller `Authorization: Bearer …`.
 
 ### Cloudflare (frontend)
 

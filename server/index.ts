@@ -54,6 +54,13 @@ import {
   toPublicRoom,
   voteFunny,
 } from './rooms.js'
+import {
+  adminTokenOk,
+  getStatsSnapshot,
+  initStats,
+  recordGameStart,
+  renderStatsHtml,
+} from './stats.js'
 import type { Lang } from './types.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -128,6 +135,32 @@ app.get('/api/health', (_req, res) => {
     rooms: allRooms().size,
     persist: persistDiagnostics(),
   })
+})
+
+app.get('/api/admin/stats', async (req, res) => {
+  const token =
+    (typeof req.query.token === 'string' && req.query.token) ||
+    (typeof req.headers['x-admin-token'] === 'string' && req.headers['x-admin-token']) ||
+    (req.headers.authorization?.startsWith('Bearer ')
+      ? req.headers.authorization.slice(7)
+      : null)
+  if (!adminTokenOk(token)) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  if (!process.env.ADMIN_STATS_TOKEN?.trim()) {
+    res.status(503).json({ error: 'ADMIN_STATS_TOKEN not configured' })
+    return
+  }
+  const snap = await getStatsSnapshot()
+  const wantsHtml =
+    req.query.format === 'html' ||
+    (typeof req.headers.accept === 'string' && req.headers.accept.includes('text/html'))
+  if (wantsHtml) {
+    res.type('html').send(renderStatsHtml(snap))
+    return
+  }
+  res.json(snap)
 })
 
 app.get('/api/room/:code/preview', async (req, res) => {
@@ -279,6 +312,7 @@ io.on('connection', (socket) => {
     if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
     const result = startGame(binding.code, binding.playerId)
     if ('error' in result) return ack?.({ ok: false, error: result.error })
+    void recordGameStart()
     ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
     broadcastRoom(result.code)
   })
@@ -315,6 +349,7 @@ io.on('connection', (socket) => {
     if (!binding) return ack?.({ ok: false, error: 'Inte i ett rum' })
     const result = rematch(binding.code, binding.playerId)
     if ('error' in result) return ack?.({ ok: false, error: result.error })
+    void recordGameStart()
     ack?.({ ok: true, room: toPublicRoom(result, binding.playerId) })
     broadcastRoom(result.code)
   })
@@ -396,6 +431,8 @@ if (isProd) {
 
 async function main() {
   const { backend } = await initPersist()
+  const stats = await initStats()
+  console.log(`Stats backend: ${stats.name}`)
   const snap = await loadSnapshot()
   if (snap) {
     restorePasses(snap.passes)
