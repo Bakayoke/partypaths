@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  abandonSessionBind,
   advanceReveal,
   backToLobby,
   clearSession,
@@ -258,8 +259,8 @@ export default function App() {
     }
 
     const sessionId = params.get('party_session')
-    const cancelled = params.get('party_cancel')
-    if (sessionId || cancelled) {
+    const partyCancelled = params.get('party_cancel')
+    if (sessionId || partyCancelled) {
       // Clear leftover Stripe return URLs — payments are removed.
       if (!joinCodeFromUrl) window.history.replaceState({}, '', '/')
       localStorage.removeItem('partypaths-party-pass')
@@ -275,9 +276,20 @@ export default function App() {
     const session = loadSession()
     if (!session) return
 
+    let rejoinCancelled = false
     void (async () => {
       try {
         const res = await rejoinGame(session.code, session.playerId)
+        if (rejoinCancelled) return
+        // User may have created/joined another party while this was in flight.
+        const still = loadSession()
+        if (
+          !still ||
+          still.code !== session.code ||
+          still.playerId !== session.playerId
+        ) {
+          return
+        }
         if (res.ok && res.room && res.playerId) {
           setRoom(res.room)
           setPlayerId(res.playerId)
@@ -290,6 +302,9 @@ export default function App() {
         /* stay on home / join */
       }
     })()
+    return () => {
+      rejoinCancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -398,6 +413,7 @@ export default function App() {
   }
 
   function leave() {
+    abandonSessionBind()
     clearSession()
     setRoom(null)
     setPlayerId(null)

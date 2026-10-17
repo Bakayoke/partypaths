@@ -10,7 +10,14 @@ let rejoinInFlight: Promise<{
   room?: PublicRoom
   error?: string
 } | null> | null = null
+/** Bumped when create/join/leave intentionally changes identity — stale rejoins abort. */
+let sessionBindEpoch = 0
 let connectionListenersAttached = false
+
+/** Call before create/join/leave so an in-flight auto-rejoin cannot rebind the old seat. */
+export function abandonSessionBind() {
+  sessionBindEpoch += 1
+}
 
 type RoomHandler = (room: PublicRoom) => void
 let onRoomHandler: RoomHandler | null = null
@@ -96,13 +103,35 @@ export async function ensureSessionBound(
   if (!session) return null
   if (rejoinInFlight) return rejoinInFlight
 
+  const epoch = sessionBindEpoch
+  const wantCode = session.code
+  const wantPlayerId = session.playerId
+
   rejoinInFlight = (async () => {
     let last: { ok: boolean; playerId?: string; room?: PublicRoom; error?: string } = {
       ok: false,
       error: 'rejoin failed',
     }
     for (let i = 0; i < retries; i++) {
-      last = await rejoinGame(session.code, session.playerId)
+      if (sessionBindEpoch !== epoch) return null
+      const current = loadSession()
+      if (
+        !current ||
+        current.code !== wantCode ||
+        current.playerId !== wantPlayerId
+      ) {
+        return null
+      }
+      last = await rejoinGame(current.code, current.playerId)
+      if (sessionBindEpoch !== epoch) return null
+      const after = loadSession()
+      if (
+        !after ||
+        after.code !== wantCode ||
+        after.playerId !== wantPlayerId
+      ) {
+        return null
+      }
       if (last.ok && last.room) return last
       const err = last.error ?? ''
       if (err.includes('finns inte') || err.includes('hittades inte') || err.includes('not found')) {
@@ -110,7 +139,7 @@ export async function ensureSessionBound(
       }
       await new Promise((r) => setTimeout(r, 700 * (i + 1)))
     }
-    return last
+    return sessionBindEpoch === epoch ? last : null
   })()
 
   try {
@@ -165,10 +194,13 @@ type OkRoom = { ok: true; playerId: string; room: PublicRoom }
 type Err = { ok: false; error: string; code?: string }
 
 export async function createGame(name: string, language: Lang, isPublic = false) {
+  abandonSessionBind()
+  clearSession()
   return ack<OkRoom | Err>('create', { name, language, isPublic })
 }
 
 export async function joinGame(code: string, name: string) {
+  abandonSessionBind()
   return ack<OkRoom | Err>('join', { code, name })
 }
 

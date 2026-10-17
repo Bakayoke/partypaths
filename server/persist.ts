@@ -339,6 +339,25 @@ export async function getOnlinePlayerIds(code: string): Promise<Set<string>> {
   return out
 }
 
+/** Presence heartbeat timestamp (ms), or null if offline in Redis. */
+export async function getPlayerPresenceAt(
+  code: string,
+  playerId: string,
+): Promise<number | null> {
+  if (!redis) return null
+  const c = code.toUpperCase().trim()
+  if (!c || !playerId) return null
+  try {
+    const raw = await redis.hGet(PRESENCE_KEY(c), playerId)
+    if (raw == null || raw === '') return null
+    const n = Number(typeof raw === 'string' ? raw : raw.toString())
+    return Number.isFinite(n) ? n : null
+  } catch (e) {
+    console.error('getPlayerPresenceAt failed', e)
+    return null
+  }
+}
+
 /** Only one instance should advance a given phase deadline. */
 export async function claimPhaseTick(code: string, phaseEndsAt: number): Promise<boolean> {
   if (!redis) return true

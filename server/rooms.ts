@@ -27,6 +27,7 @@ import {
   claimRoomCode,
   deleteRoomRecord,
   getOnlinePlayerIds,
+  getPlayerPresenceAt,
   loadRoomRecord,
   saveRoomRecord,
   setPlayerOnline,
@@ -180,37 +181,50 @@ function detachSocket(
 function scheduleDisconnectGrace(code: string, playerId: string) {
   cancelDisconnectTimer(code, playerId)
   const key = playerKey(code, playerId)
+  const graceStartedAt = Date.now()
   disconnectTimers.set(
     key,
     setTimeout(() => {
-      disconnectTimers.delete(key)
-      if (localSocketCount(code, playerId) > 0) return
-      const r = rooms.get(code)
-      if (!r) return
-      const p = r.players.find((x) => x.id === playerId)
-      if (!p) return
-      p.connected = false
-      void setPlayerOnline(code, playerId, false)
+      void (async () => {
+        disconnectTimers.delete(key)
+        if (localSocketCount(code, playerId) > 0) return
 
-      if (p.id === r.hostId) {
-        setTimeout(() => {
-          const rr = rooms.get(code)
-          if (!rr) return
-          if (localSocketCount(code, rr.hostId) > 0) return
-          const host = rr.players.find((x) => x.id === rr.hostId)
-          if (host?.connected) return
-          const next = rr.players.find((x) => x.connected && !x.spectator)
-          if (!next) return
-          rr.hostId = next.id
-          rr.notice = { kind: 'host_transfer', hostName: next.name, at: Date.now() }
-          touch(rr)
-          onBroadcast?.(rr.code)
-        }, HOST_TRANSFER_AFTER_MS - DISCONNECT_GRACE_MS)
-      } else if (r.status === 'lobby' || r.status === 'finished') {
-        r.players = r.players.filter((x) => x.id !== playerId)
-      }
-      touch(r)
-      onBroadcast?.(r.code)
+        // Reconnected on another instance after we started grace — keep them online.
+        const presenceAt = await getPlayerPresenceAt(code, playerId)
+        if (presenceAt != null && presenceAt > graceStartedAt) return
+
+        const r = rooms.get(code)
+        if (!r) return
+        const p = r.players.find((x) => x.id === playerId)
+        if (!p) return
+        p.connected = false
+        void setPlayerOnline(code, playerId, false)
+
+        if (p.id === r.hostId) {
+          setTimeout(() => {
+            void (async () => {
+              const rr = rooms.get(code)
+              if (!rr) return
+              if (localSocketCount(code, rr.hostId) > 0) return
+              const hostPresence = await getPlayerPresenceAt(code, rr.hostId)
+              if (hostPresence != null) return
+              const host = rr.players.find((x) => x.id === rr.hostId)
+              if (host?.connected) return
+              await refreshConnectedFlags(rr)
+              const next = rr.players.find((x) => x.connected && !x.spectator)
+              if (!next) return
+              rr.hostId = next.id
+              rr.notice = { kind: 'host_transfer', hostName: next.name, at: Date.now() }
+              touch(rr)
+              onBroadcast?.(rr.code)
+            })()
+          }, HOST_TRANSFER_AFTER_MS - DISCONNECT_GRACE_MS)
+        } else if (r.status === 'lobby' || r.status === 'finished') {
+          r.players = r.players.filter((x) => x.id !== playerId)
+        }
+        touch(r)
+        onBroadcast?.(r.code)
+      })()
     }, DISCONNECT_GRACE_MS),
   )
 }
