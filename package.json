@@ -11,7 +11,8 @@
     "build": "npm install --prefix client && npm run build --prefix client",
     "start": "NODE_ENV=production tsx server/index.ts",
     "test": "tsx --test server/game/paths.test.ts server/rooms.join.test.ts",
-    "deploy:cf": "npm run build && npx wrangler deploy"
+    "deploy:cf": "npm run build && npx wrangler deploy",
+    "cf:security": "node scripts/cf-zone-security.mjs"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",

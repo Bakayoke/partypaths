@@ -1,4 +1,4 @@
 Contact: mailto:linus.stenvi@gmail.com
-Expires: 2027-07-31T00:00:00.000Z
+Expires: 2027-12-31T00:00:00.000Z
 Preferred-Languages: sv, en
 Canonical: https://partypaths.com/.well-known/security.txt
