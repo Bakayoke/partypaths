@@ -73,10 +73,39 @@ function SisterGameLink({
   )
 }
 
-const SWISH_FIKA =
-  'https://app.swish.nu/1/p/sw/?sw=46730457930&msg=' +
-  encodeURIComponent('Fika · Party Paths') +
-  '&edit=amt,msg'
+const SWISH_NUMBER = '46730457930'
+const SWISH_MSG = 'Fika · Party Paths'
+
+/** Official https — Universal Link on phone; download/info page on desktop. */
+const SWISH_HTTPS =
+  `https://app.swish.nu/1/p/sw/?sw=${SWISH_NUMBER}&msg=${encodeURIComponent(SWISH_MSG)}&edit=amt,msg`
+
+/** Native scheme — most reliable “open Swish now” on iOS/Android. */
+const SWISH_APP =
+  'swish://payment?data=' +
+  encodeURIComponent(
+    JSON.stringify({
+      version: 1,
+      payee: { value: SWISH_NUMBER },
+      message: { value: SWISH_MSG },
+    }),
+  )
+
+function openSwishFika(e: { preventDefault: () => void }) {
+  e.preventDefault()
+  const mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+  if (!mobile) {
+    window.open(SWISH_HTTPS, '_blank', 'noopener,noreferrer')
+    return
+  }
+  // Same-tab — target=_blank often blocks the handoff into the Swish app.
+  window.location.href = SWISH_APP
+  window.setTimeout(() => {
+    if (document.visibilityState === 'visible') {
+      window.location.href = SWISH_HTTPS
+    }
+  }, 900)
+}
 
 function FikaLink({
   ui,
@@ -87,7 +116,7 @@ function FikaLink({
 }) {
   return (
     <p className={`fika-wrap${compact ? ' compact' : ''}`}>
-      <a className="fika-link" href={SWISH_FIKA} target="_blank" rel="noreferrer">
+      <a className="fika-link" href={SWISH_HTTPS} onClick={openSwishFika}>
         {ui.fikaCta}
         <span>{ui.fikaSwish}</span>
       </a>
