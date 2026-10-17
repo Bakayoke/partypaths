@@ -73,6 +73,28 @@ function SisterGameLink({
   )
 }
 
+const SWISH_FIKA =
+  'https://app.swish.nu/1/p/sw/?sw=46730457930&msg=' +
+  encodeURIComponent('Fika · Party Paths') +
+  '&edit=amt,msg'
+
+function FikaLink({
+  ui,
+  compact,
+}: {
+  ui: ReturnType<typeof t>
+  compact?: boolean
+}) {
+  return (
+    <p className={`fika-wrap${compact ? ' compact' : ''}`}>
+      <a className="fika-link" href={SWISH_FIKA} target="_blank" rel="noreferrer">
+        {ui.fikaCta}
+        <span>{ui.fikaSwish}</span>
+      </a>
+    </p>
+  )
+}
+
 function SisterGameLinks({
   ui,
   compact,
@@ -501,6 +523,7 @@ export default function App() {
             </button>
           </div>
           <SisterGameLinks ui={ui} spotlight />
+          <FikaLink ui={ui} />
           <p className="muted">{ui.freeTier}</p>
         </div>
       )}
@@ -1480,6 +1503,7 @@ function PlayView({
                 </div>
               )}
               <SisterGameLinks ui={ui} compact spotlight />
+              <FikaLink ui={ui} compact />
             </>
           )}
         </>
