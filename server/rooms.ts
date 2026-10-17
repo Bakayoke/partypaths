@@ -23,7 +23,14 @@ import {
   victimForWrongGuess,
 } from './game/paths.js'
 import { limitsFor, tierFromExpiry } from './premium.js'
-import { deleteRoomRecord, loadRoomRecord, saveRoomRecord } from './persist.js'
+import {
+  claimRoomCode,
+  deleteRoomRecord,
+  getOnlinePlayerIds,
+  loadRoomRecord,
+  saveRoomRecord,
+  setPlayerOnline,
+} from './persist.js'
 import { wordPack } from './words/index.js'
 import type {
   Award,
@@ -55,6 +62,8 @@ function normalizeTheme(raw: unknown): import('./types.js').WordTheme {
 
 const rooms = new Map<string, Room>()
 const socketToPlayer = new Map<string, { code: string; playerId: string }>()
+/** All live sockets for a seat — multi-tab / overlapping reconnect safe. */
+const playerSockets = new Map<string, Set<string>>()
 const disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 let onPersist: (() => void) | null = null
@@ -90,6 +99,132 @@ function cancelDisconnectTimer(code: string, playerId: string) {
   }
 }
 
+function localSocketCount(code: string, playerId: string) {
+  return playerSockets.get(playerKey(code, playerId))?.size ?? 0
+}
+
+function bindSocket(code: string, playerId: string, socketId: string) {
+  const prev = socketToPlayer.get(socketId)
+  if (prev && (prev.code !== code || prev.playerId !== playerId)) {
+    detachSocket(socketId, { dropLobbySeat: true, deferOffline: false })
+  }
+
+  socketToPlayer.set(socketId, { code, playerId })
+  const key = playerKey(code, playerId)
+  let set = playerSockets.get(key)
+  if (!set) {
+    set = new Set()
+    playerSockets.set(key, set)
+  }
+  set.add(socketId)
+  cancelDisconnectTimer(code, playerId)
+
+  const room = rooms.get(code)
+  const player = room?.players.find((p) => p.id === playerId)
+  if (player) player.connected = true
+  void setPlayerOnline(code, playerId, true)
+}
+
+/**
+ * Detach one socket from its seat.
+ * - deferOffline: keep `connected` true until grace expires (brief reconnects)
+ * - dropLobbySeat: leaving lobby frees the seat immediately
+ */
+function detachSocket(
+  socketId: string,
+  opts: { dropLobbySeat?: boolean; deferOffline?: boolean } = {},
+): { code: string; playerId: string } | null {
+  const binding = socketToPlayer.get(socketId)
+  if (!binding) return null
+  socketToPlayer.delete(socketId)
+
+  const key = playerKey(binding.code, binding.playerId)
+  const set = playerSockets.get(key)
+  if (set) {
+    set.delete(socketId)
+    if (set.size === 0) playerSockets.delete(key)
+  }
+
+  if (localSocketCount(binding.code, binding.playerId) > 0) {
+    return binding
+  }
+
+  const room = rooms.get(binding.code)
+  if (!room) return binding
+  const player = room.players.find((p) => p.id === binding.playerId)
+  if (!player) return binding
+
+  if (opts.dropLobbySeat && (room.status === 'lobby' || room.status === 'finished')) {
+    if (player.id !== room.hostId) {
+      room.players = room.players.filter((p) => p.id !== player.id)
+      cancelDisconnectTimer(binding.code, binding.playerId)
+      void setPlayerOnline(binding.code, binding.playerId, false)
+      touch(room)
+      return binding
+    }
+  }
+
+  if (opts.deferOffline !== false) {
+    // Stay "connected" during grace so phases don't skip the player on a blip.
+    scheduleDisconnectGrace(binding.code, binding.playerId)
+    touch(room)
+    return binding
+  }
+
+  player.connected = false
+  void setPlayerOnline(binding.code, binding.playerId, false)
+  touch(room)
+  return binding
+}
+
+function scheduleDisconnectGrace(code: string, playerId: string) {
+  cancelDisconnectTimer(code, playerId)
+  const key = playerKey(code, playerId)
+  disconnectTimers.set(
+    key,
+    setTimeout(() => {
+      disconnectTimers.delete(key)
+      if (localSocketCount(code, playerId) > 0) return
+      const r = rooms.get(code)
+      if (!r) return
+      const p = r.players.find((x) => x.id === playerId)
+      if (!p) return
+      p.connected = false
+      void setPlayerOnline(code, playerId, false)
+
+      if (p.id === r.hostId) {
+        setTimeout(() => {
+          const rr = rooms.get(code)
+          if (!rr) return
+          if (localSocketCount(code, rr.hostId) > 0) return
+          const host = rr.players.find((x) => x.id === rr.hostId)
+          if (host?.connected) return
+          const next = rr.players.find((x) => x.connected && !x.spectator)
+          if (!next) return
+          rr.hostId = next.id
+          rr.notice = { kind: 'host_transfer', hostName: next.name, at: Date.now() }
+          touch(rr)
+          onBroadcast?.(rr.code)
+        }, HOST_TRANSFER_AFTER_MS - DISCONNECT_GRACE_MS)
+      } else if (r.status === 'lobby' || r.status === 'finished') {
+        r.players = r.players.filter((x) => x.id !== playerId)
+      }
+      touch(r)
+      onBroadcast?.(r.code)
+    }, DISCONNECT_GRACE_MS),
+  )
+}
+
+/** Merge local sockets + Redis presence into room.players[].connected */
+export async function refreshConnectedFlags(room: Room): Promise<void> {
+  const remote = await getOnlinePlayerIds(room.code)
+  for (const p of room.players) {
+    const local = localSocketCount(room.code, p.id) > 0
+    const grace = disconnectTimers.has(playerKey(room.code, p.id))
+    p.connected = local || remote.has(p.id) || grace
+  }
+}
+
 function roomLimits(room: Room) {
   return limitsFor(tierFromExpiry(room.premiumExpiresAt))
 }
@@ -102,10 +237,13 @@ function roomMsg(room: Room, sv: string, en: string) {
   return msg(room.language, sv, en)
 }
 
-function uniqueCode(): string {
-  let code = makeCode()
-  while (rooms.has(code)) code = makeCode()
-  return code
+async function allocateRoomCode(): Promise<string> {
+  for (let i = 0; i < 40; i++) {
+    const code = makeCode()
+    if (rooms.has(code)) continue
+    if (await claimRoomCode(code)) return code
+  }
+  throw new Error('Could not allocate a free room code')
 }
 
 function isActivePlayer(room: Room, p: Player): boolean {
@@ -120,6 +258,13 @@ function seatedPlayers(room: Room): Player[] {
 
 function connectedPlayers(room: Room): Player[] {
   return seatedPlayers(room).filter((p) => p.connected)
+}
+
+/** Seated players still in the party — includes brief reconnect grace. */
+function playablePlayers(room: Room): Player[] {
+  return seatedPlayers(room).filter(
+    (p) => p.connected || disconnectTimers.has(playerKey(room.code, p.id)),
+  )
 }
 
 function midGame(status: RoomStatus): boolean {
@@ -248,25 +393,19 @@ export function getRoom(code: string) {
   return rooms.get(code.toUpperCase().trim()) ?? null
 }
 
-/** Pull a room from Redis into memory when this instance does not have it yet. */
+/** Pull a room from Redis into memory; refresh if a newer copy exists. */
 export async function hydrateRoom(code: string): Promise<Room | null> {
   const c = code.toUpperCase().trim()
   if (!c) return null
-  const existing = rooms.get(c)
-  if (existing) return existing
+  if (rooms.has(c)) {
+    return (await reloadRoomFromStore(c)) ?? rooms.get(c) ?? null
+  }
   const raw = await loadRoomRecord(c)
   if (!raw) return null
   restoreRooms([raw])
   const room = rooms.get(c)
   if (!room) return null
-  // Rebuild connected flags from sockets bound on THIS instance only.
-  const localConnected = new Set<string>()
-  for (const binding of socketToPlayer.values()) {
-    if (binding.code === c) localConnected.add(binding.playerId)
-  }
-  for (const p of room.players) {
-    p.connected = localConnected.has(p.id)
-  }
+  await refreshConnectedFlags(room)
   return room
 }
 
@@ -279,23 +418,19 @@ export async function reloadRoomFromStore(code: string): Promise<Room | null> {
   if (!raw) {
     // A missed Redis read must NOT wipe a live local room (transient blips /
     // publish-before-write races were deleting lobbies mid-session).
+    if (local) await refreshConnectedFlags(local)
     return local ?? null
   }
   // Ignore Redis echo of our own save (same or older updatedAt), otherwise we
   // clobber live sockets (save persists connected:false) right after startGame.
   if (local && (local.updatedAt || 0) >= (raw.updatedAt || 0)) {
+    await refreshConnectedFlags(local)
     return local
-  }
-  const localConnected = new Set<string>()
-  for (const binding of socketToPlayer.values()) {
-    if (binding.code === c) localConnected.add(binding.playerId)
   }
   restoreRooms([raw])
   const room = rooms.get(c)
   if (!room) return null
-  for (const p of room.players) {
-    p.connected = localConnected.has(p.id)
-  }
+  await refreshConnectedFlags(room)
   return room
 }
 
@@ -303,14 +438,14 @@ export function getBinding(socketId: string) {
   return socketToPlayer.get(socketId) ?? null
 }
 
-export function createRoom(
+export async function createRoom(
   hostName: string,
   socketId: string,
   language: Lang = 'sv',
   _partyToken?: string | null,
   wantPublic = false,
-): { room: Room; playerId: string } {
-  const code = uniqueCode()
+): Promise<{ room: Room; playerId: string }> {
+  const code = await allocateRoomCode()
   const playerId = crypto.randomUUID()
   const host: Player = {
     id: playerId,
@@ -338,30 +473,11 @@ export function createRoom(
     ...emptyGameFields(),
   }
 
-  releaseSocket(socketId)
+  detachSocket(socketId, { dropLobbySeat: true, deferOffline: false })
   rooms.set(code, room)
-  socketToPlayer.set(socketId, { code, playerId })
+  bindSocket(code, playerId, socketId)
   touch(room)
   return { room, playerId }
-}
-
-function releaseSocket(socketId: string) {
-  const prev = socketToPlayer.get(socketId)
-  if (!prev) return
-  socketToPlayer.delete(socketId)
-  const room = rooms.get(prev.code)
-  if (!room) return
-  const player = room.players.find((p) => p.id === prev.playerId)
-  if (!player || !player.connected) return
-  player.connected = false
-  touch(room)
-  if (room.status === 'lobby' || room.status === 'finished') {
-    // Drop immediately when switching rooms from the lobby so the seat frees up.
-    if (player.id !== room.hostId) {
-      room.players = room.players.filter((p) => p.id !== player.id)
-      touch(room)
-    }
-  }
 }
 
 export function joinRoom(
@@ -392,8 +508,7 @@ export function joinRoom(
   if (existing?.code === room.code) {
     const mine = room.players.find((p) => p.id === existing.playerId)
     if (mine) {
-      cancelDisconnectTimer(room.code, mine.id)
-      mine.connected = true
+      bindSocket(room.code, mine.id, socketId)
       if (!mine.spectator && mine.id !== room.hostId) mine.name = displayName
       touch(room)
       return { room, playerId: mine.id }
@@ -402,7 +517,7 @@ export function joinRoom(
 
   // Leaving another room on this socket frees the old lobby seat.
   if (existing && existing.code !== room.code) {
-    releaseSocket(socketId)
+    detachSocket(socketId, { dropLobbySeat: true, deferOffline: false })
   }
 
   if (midGame(room.status)) {
@@ -413,7 +528,7 @@ export function joinRoom(
       connected: true,
       spectator: true,
     })
-    socketToPlayer.set(socketId, { code: room.code, playerId })
+    bindSocket(room.code, playerId, socketId)
     touch(room)
     return { room, playerId }
   }
@@ -423,9 +538,7 @@ export function joinRoom(
     (p) => !p.connected && p.name.toLowerCase() === displayName.toLowerCase(),
   )
   if (reclaim) {
-    cancelDisconnectTimer(room.code, reclaim.id)
-    reclaim.connected = true
-    socketToPlayer.set(socketId, { code: room.code, playerId: reclaim.id })
+    bindSocket(room.code, reclaim.id, socketId)
     touch(room)
     return { room, playerId: reclaim.id }
   }
@@ -465,7 +578,7 @@ export function joinRoom(
     connected: true,
     spectator: false,
   })
-  socketToPlayer.set(socketId, { code: room.code, playerId })
+  bindSocket(room.code, playerId, socketId)
   touch(room)
   return { room, playerId }
 }
@@ -479,57 +592,13 @@ export function reconnectSocket(
   if (!room) return { error: 'Rummet finns inte / Room not found' }
   const player = room.players.find((p) => p.id === playerId)
   if (!player) return { error: 'Spelaren hittades inte / Player not found' }
-  cancelDisconnectTimer(room.code, playerId)
-  player.connected = true
-  socketToPlayer.set(socketId, { code: room.code, playerId })
+  bindSocket(room.code, playerId, socketId)
   touch(room)
   return room
 }
 
 export function handleDisconnect(socketId: string) {
-  const binding = socketToPlayer.get(socketId)
-  if (!binding) return
-  socketToPlayer.delete(socketId)
-  const room = rooms.get(binding.code)
-  if (!room) return
-  const player = room.players.find((p) => p.id === binding.playerId)
-  if (!player) return
-  player.connected = false
-  touch(room)
-
-  const key = playerKey(binding.code, binding.playerId)
-  cancelDisconnectTimer(binding.code, binding.playerId)
-  disconnectTimers.set(
-    key,
-    setTimeout(() => {
-      disconnectTimers.delete(key)
-      const r = rooms.get(binding.code)
-      if (!r) return
-      const p = r.players.find((x) => x.id === binding.playerId)
-      if (!p || p.connected) return
-      // Host transfer if host gone long enough
-      if (p.id === r.hostId) {
-        setTimeout(() => {
-          const rr = rooms.get(binding.code)
-          if (!rr) return
-          const host = rr.players.find((x) => x.id === rr.hostId)
-          if (host?.connected) return
-          const next = rr.players.find((x) => x.connected && !x.spectator)
-          if (!next) return
-          rr.hostId = next.id
-          rr.notice = { kind: 'host_transfer', hostName: next.name, at: Date.now() }
-          touch(rr)
-          onBroadcast?.(rr.code)
-        }, HOST_TRANSFER_AFTER_MS - DISCONNECT_GRACE_MS)
-      } else if (r.status === 'lobby' || r.status === 'finished') {
-        // Drop lobby ghosts so they don't clutter the roster (capacity already
-        // ignores disconnected players).
-        r.players = r.players.filter((x) => x.id !== binding.playerId)
-      }
-      touch(r)
-      onBroadcast?.(r.code)
-    }, DISCONNECT_GRACE_MS),
-  )
+  detachSocket(socketId, { deferOffline: true })
 }
 
 export function previewRoom(code: string) {
@@ -646,17 +715,29 @@ function packForRoom(room: Room): string[] {
   return wordPack(room.language, room.wordTheme ?? 'fest')
 }
 
+function pathOrder(room: Room): Player[] {
+  // Keep the roster that the round was dealt for — not whoever happens to be
+  // connected at hop boundaries (that desynced authors/guessers after blips).
+  const byId = new Map(room.players.map((p) => [p.id, p]))
+  const fromPaths = room.paths
+    .map((p) => byId.get(p.originPlayerId))
+    .filter((p): p is Player => p != null && isActivePlayer(room, p))
+  if (fromPaths.length === room.paths.length && fromPaths.length > 0) return fromPaths
+  return playablePlayers(room)
+}
+
 function beginEmojiPhase(room: Room) {
   room.status = 'emoji'
   room.submissions = {}
   room.phaseEndsAt = Date.now() + room.emojiSeconds * 1000
-  // create empty steps for this hop
-  const order = seatedPlayers(room)
+  const order = pathOrder(room)
   const n = order.length
+  if (n === 0) return
   for (let oi = 0; oi < room.paths.length; oi++) {
     const path = room.paths[oi]
     const author = order[authorIndexForHop(oi, room.hopIndex, n)]
     const guesser = order[guesserIndexForHop(oi, room.hopIndex, n)]
+    if (!author || !guesser) continue
     path.steps[room.hopIndex] = createEmptyStep({
       authorId: author.id,
       meaning: meaningForHop(path, room.hopIndex),
@@ -678,7 +759,7 @@ function startRoundInternal(room: Room) {
   room.seasonStats ??= {}
   room.awards ??= []
 
-  const order = connectedPlayers(room)
+  const order = playablePlayers(room)
   if (order.length < MIN_PLAYERS) {
     return {
       error: roomMsg(
@@ -996,31 +1077,42 @@ function promoteWaitlist(room: Room) {
 }
 
 function taskPlayerIds(room: Room): string[] {
-  const order = seatedPlayers(room)
+  const order = pathOrder(room)
   const n = order.length
   const ids = new Set<string>()
+  if (n === 0) return []
   if (room.status === 'emoji') {
     for (let oi = 0; oi < room.paths.length; oi++) {
-      ids.add(order[authorIndexForHop(oi, room.hopIndex, n)].id)
+      const p = order[authorIndexForHop(oi, room.hopIndex, n)]
+      if (p) ids.add(p.id)
     }
   } else if (room.status === 'guess') {
     for (let oi = 0; oi < room.paths.length; oi++) {
-      ids.add(order[guesserIndexForHop(oi, room.hopIndex, n)].id)
+      const p = order[guesserIndexForHop(oi, room.hopIndex, n)]
+      if (p) ids.add(p.id)
     }
   } else if (room.status === 'funny_vote') {
-    for (const p of connectedPlayers(room)) ids.add(p.id)
+    for (const p of playablePlayers(room)) ids.add(p.id)
   }
   return [...ids]
 }
 
+function playerStillInParty(room: Room, playerId: string) {
+  const p = room.players.find((x) => x.id === playerId)
+  if (!p) return false
+  if (p.connected) return true
+  if (disconnectTimers.has(playerKey(room.code, playerId))) return true
+  return false
+}
+
 function maybeAdvance(room: Room) {
   const needed = taskPlayerIds(room)
-  const connectedNeeded = needed.filter((id) => {
-    const p = room.players.find((x) => x.id === id)
-    return p?.connected
-  })
-  const done = connectedNeeded.every((id) => room.submissions[id] !== undefined)
-  if (done && connectedNeeded.length > 0) {
+  // Wait for anyone still in the party (including reconnect grace) — do not
+  // skip a briefly-dropped socket and jump the whole table forward.
+  const presentNeeded = needed.filter((id) => playerStillInParty(room, id))
+  if (presentNeeded.length === 0) return
+  const done = presentNeeded.every((id) => room.submissions[id] !== undefined)
+  if (done) {
     if (room.status === 'emoji') lockEmojis(room)
     else if (room.status === 'guess') lockGuesses(room)
     else if (room.status === 'funny_vote') lockFunnyVotes(room)
@@ -1046,7 +1138,7 @@ export function submitEmojis(
   room.submissions[playerId] = emojis
   ensurePartyStats(room, playerId).emojiChars += [...emojis].length
   // Write onto the path step this player authors
-  const order = seatedPlayers(room)
+  const order = pathOrder(room)
   const n = order.length
   const authorIdx = order.findIndex((p) => p.id === playerId)
   for (let oi = 0; oi < room.paths.length; oi++) {
@@ -1074,7 +1166,7 @@ export function submitGuess(
   }
   const guess = normalizeWord(guessRaw).slice(0, 48) || EMPTY_GUESS
   room.submissions[playerId] = guess
-  const order = seatedPlayers(room)
+  const order = pathOrder(room)
   const n = order.length
   const guesserIdx = order.findIndex((p) => p.id === playerId)
   for (let oi = 0; oi < room.paths.length; oi++) {
@@ -1126,12 +1218,14 @@ function fillMissingEmojis(room: Room) {
 }
 
 function lockEmojis(room: Room) {
+  if (room.status !== 'emoji') return
   fillMissingEmojis(room)
   beginGuessPhase(room)
   touch(room)
 }
 
 function lockGuesses(room: Room) {
+  if (room.status !== 'guess') return
   const points = room.doublePoints ? CORRECT_POINTS * 2 : CORRECT_POINTS
   for (const path of room.paths) {
     const step = path.steps[room.hopIndex]
@@ -1180,6 +1274,7 @@ function lockGuesses(room: Room) {
 }
 
 function enterFunnyVote(room: Room) {
+  if (room.status !== 'reveal') return
   room.status = 'funny_vote'
   room.submissions = {}
   room.funnyVotes = {}
@@ -1199,6 +1294,7 @@ export function advanceReveal(code: string, playerId: string): Room | { error: s
 }
 
 function lockFunnyVotes(room: Room) {
+  if (room.status !== 'funny_vote') return
   const pointsPerVote = room.doublePoints ? FUNNY_VOTE_POINTS * 2 : FUNNY_VOTE_POINTS
   applyFunnyVotePoints(room.scores, room.paths, room.funnyVotes, pointsPerVote)
 
@@ -1242,6 +1338,7 @@ function lockFunnyVotes(room: Room) {
 }
 
 export function onPhaseTimeout(room: Room) {
+  if (room.phaseEndsAt <= 0 || Date.now() < room.phaseEndsAt) return
   if (room.status === 'emoji') lockEmojis(room)
   else if (room.status === 'guess') lockGuesses(room)
   else if (room.status === 'reveal') enterFunnyVote(room)
@@ -1298,7 +1395,7 @@ function publicPaths(room: Room): PublicPath[] {
 }
 
 function viewerTask(room: Room, viewerId: string) {
-  const order = seatedPlayers(room)
+  const order = pathOrder(room)
   const n = order.length
   const idx = order.findIndex((p) => p.id === viewerId)
   if (idx < 0) return null

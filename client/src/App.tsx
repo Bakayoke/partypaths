@@ -209,6 +209,24 @@ export default function App() {
       if (res.ok && res.room) {
         setRoom(res.room)
         if (res.playerId) setPlayerId(res.playerId)
+        return
+      }
+      const err = res.error ?? ''
+      // Room/player truly gone — leave the dead play UI instead of sticking to a ghost.
+      if (
+        err.includes('finns inte') ||
+        err.includes('hittades inte') ||
+        err.includes('not found')
+      ) {
+        clearSession()
+        setRoom(null)
+        setPlayerId(null)
+        setScreen('home')
+        setBanner(
+          uiLang === 'en'
+            ? 'That party is gone — start or join a new one.'
+            : 'Den festen finns inte längre — starta eller gå med i en ny.',
+        )
       }
     })()
     return () => {
@@ -344,8 +362,27 @@ export default function App() {
       const session = loadSession()
       // Always join as a new seat when switching rooms (or rejoining under a new name).
       if (session && session.code !== code) clearSession()
-      const res = await joinGame(code, name)
+
+      // Same party + same seat: rejoin instead of creating a mid-game spectator twin.
+      const sameSeat = session && session.code === code && session.playerId
+      const res = sameSeat
+        ? await rejoinGame(code, session.playerId)
+        : await joinGame(code, name)
       if (!res.ok) {
+        // Stale seat — fall back to a fresh join under the typed name.
+        if (sameSeat) {
+          clearSession()
+          const fresh = await joinGame(code, name)
+          if (!fresh.ok) {
+            setError(fresh.error)
+            return
+          }
+          saveSession({ code: fresh.room.code, playerId: fresh.playerId, name })
+          setRoom(fresh.room)
+          setPlayerId(fresh.playerId)
+          setScreen('play')
+          return
+        }
         setError(res.error)
         return
       }

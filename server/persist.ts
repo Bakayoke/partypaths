@@ -31,8 +31,14 @@ let lastError: string | null = null
 
 const ROOM_KEY = (code: string) => `partypaths:room:${code}`
 const ROOM_INDEX = 'partypaths:rooms'
+const PRESENCE_KEY = (code: string) => `partypaths:presence:${code}`
+const CODE_CLAIM_KEY = (code: string) => `partypaths:code:${code}`
+const TICK_KEY = (code: string, phaseEndsAt: number) =>
+  `partypaths:tick:${code}:${phaseEndsAt}`
 export const ROOM_UPDATE_CHANNEL = 'partypaths:room-update'
 const ROOM_TTL_SEC = 60 * 60 * 24
+const PRESENCE_TTL_SEC = 60 * 60 * 6
+const CODE_CLAIM_TTL_SEC = ROOM_TTL_SEC
 
 function emptySnapshot(): PersistedSnapshot {
   return { version: 1, savedAt: Date.now(), passes: [], rooms: [] }
@@ -242,7 +248,22 @@ export async function saveRoomRecord(room: Room): Promise<void> {
       ...room,
       players: room.players.map((p) => ({ ...p, connected: false })),
     })
-    await redis.set(ROOM_KEY(room.code), payload, { EX: ROOM_TTL_SEC })
+    const key = ROOM_KEY(room.code)
+    // Last-write-wins guard: never let an older in-memory copy overwrite newer Redis state.
+    const existing = await redis.get(key)
+    if (existing) {
+      try {
+        const prev = JSON.parse(
+          typeof existing === 'string' ? existing : existing.toString(),
+        ) as { updatedAt?: number }
+        if ((prev.updatedAt || 0) > (room.updatedAt || 0)) {
+          return
+        }
+      } catch {
+        /* overwrite corrupt payloads */
+      }
+    }
+    await redis.set(key, payload, { EX: ROOM_TTL_SEC })
     await redis.sAdd(ROOM_INDEX, room.code)
     await redis.publish(ROOM_UPDATE_CHANNEL, room.code)
     lastSaveAt = Date.now()
@@ -250,6 +271,85 @@ export async function saveRoomRecord(room: Room): Promise<void> {
   } catch (e) {
     lastError = e instanceof Error ? e.message : 'room save failed'
     console.error('saveRoomRecord failed', e)
+  }
+}
+
+/** Claim a 4-letter room code across instances (SET NX). */
+export async function claimRoomCode(code: string): Promise<boolean> {
+  const c = code.toUpperCase().trim()
+  if (!c) return false
+  if (!redis) return true
+  try {
+    const ok = await redis.set(CODE_CLAIM_KEY(c), '1', {
+      NX: true,
+      EX: CODE_CLAIM_TTL_SEC,
+    })
+    return ok === 'OK' || ok === true
+  } catch (e) {
+    console.error('claimRoomCode failed', e)
+    return true
+  }
+}
+
+export async function releaseRoomCode(code: string): Promise<void> {
+  if (!redis) return
+  try {
+    await redis.del(CODE_CLAIM_KEY(code.toUpperCase().trim()))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Cross-instance presence: who is currently online in a room. */
+export async function setPlayerOnline(
+  code: string,
+  playerId: string,
+  online: boolean,
+): Promise<void> {
+  if (!redis) return
+  const c = code.toUpperCase().trim()
+  if (!c || !playerId) return
+  try {
+    const key = PRESENCE_KEY(c)
+    if (online) {
+      await redis.hSet(key, playerId, String(Date.now()))
+      await redis.expire(key, PRESENCE_TTL_SEC)
+    } else {
+      await redis.hDel(key, playerId)
+    }
+  } catch (e) {
+    console.error('setPlayerOnline failed', e)
+  }
+}
+
+export async function getOnlinePlayerIds(code: string): Promise<Set<string>> {
+  const out = new Set<string>()
+  if (!redis) return out
+  const c = code.toUpperCase().trim()
+  if (!c) return out
+  try {
+    const raw = await redis.hGetAll(PRESENCE_KEY(c))
+    if (!raw || typeof raw !== 'object') return out
+    for (const id of Object.keys(raw)) {
+      if (id) out.add(id)
+    }
+  } catch (e) {
+    console.error('getOnlinePlayerIds failed', e)
+  }
+  return out
+}
+
+/** Only one instance should advance a given phase deadline. */
+export async function claimPhaseTick(code: string, phaseEndsAt: number): Promise<boolean> {
+  if (!redis) return true
+  const c = code.toUpperCase().trim()
+  if (!c || !phaseEndsAt) return true
+  try {
+    const ok = await redis.set(TICK_KEY(c, phaseEndsAt), '1', { NX: true, EX: 60 })
+    return ok === 'OK' || ok === true
+  } catch (e) {
+    console.error('claimPhaseTick failed', e)
+    return true
   }
 }
 
@@ -273,6 +373,8 @@ export async function deleteRoomRecord(code: string): Promise<void> {
   const c = code.toUpperCase().trim()
   try {
     await redis.del(ROOM_KEY(c))
+    await redis.del(PRESENCE_KEY(c))
+    await redis.del(CODE_CLAIM_KEY(c))
     await redis.sRem(ROOM_INDEX, c)
     await redis.publish(ROOM_UPDATE_CHANNEL, c)
   } catch (e) {

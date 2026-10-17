@@ -11,6 +11,7 @@ import {
 } from './premium.js'
 import {
   buildSnapshot,
+  claimPhaseTick,
   createRedisAdapterClients,
   flushPersist,
   initPersist,
@@ -35,6 +36,7 @@ import {
   previewRoom,
   pruneIdleRooms,
   reconnectSocket,
+  refreshConnectedFlags,
   reloadRoomFromStore,
   rematch,
   restoreRooms,
@@ -113,14 +115,54 @@ function persistNow() {
 
 setPersistHook(persistNow)
 setPassPersistHook(persistNow)
-setBroadcastHook(broadcastRoom)
+setBroadcastHook((code) => {
+  void broadcastRoom(code)
+})
 
-function broadcastRoom(code: string) {
+function partyRoom(code: string) {
+  return `party:${code.toUpperCase().trim()}`
+}
+
+function attachSocketToParty(
+  socket: { id: string; data: Record<string, unknown>; join: (r: string) => void; leave: (r: string) => void },
+  code: string,
+  playerId: string,
+) {
+  const prev = typeof socket.data.code === 'string' ? socket.data.code : null
+  if (prev && prev !== code) {
+    try {
+      socket.leave(partyRoom(prev))
+    } catch {
+      /* ignore */
+    }
+  }
+  socket.data.code = code
+  socket.data.playerId = playerId
+  void socket.join(partyRoom(code))
+}
+
+async function broadcastRoom(code: string) {
   const room = getRoom(code)
   if (!room) return
+  await refreshConnectedFlags(room)
+  const c = code.toUpperCase().trim()
+  try {
+    const sockets = await io.in(partyRoom(c)).fetchSockets()
+    if (sockets.length > 0) {
+      for (const s of sockets) {
+        const playerId = typeof s.data.playerId === 'string' ? s.data.playerId : null
+        if (!playerId) continue
+        s.emit('room', toPublicRoom(room, playerId))
+      }
+      return
+    }
+  } catch (e) {
+    console.error('broadcastRoom fetchSockets failed', e)
+  }
+  // Fallback: local bindings only
   for (const [, socket] of io.of('/').sockets) {
     const binding = getBinding(socket.id)
-    if (!binding || binding.code !== code) continue
+    if (!binding || binding.code !== c) continue
     socket.emit('room', toPublicRoom(room, binding.playerId))
   }
 }
@@ -188,7 +230,10 @@ io.on('connection', (socket) => {
     const code = payload?.roomCode ?? payload?.code
     if (!binding && code && payload?.playerId) {
       const rebound = reconnectSocket(String(code), String(payload.playerId), socket.id)
-      if (!('error' in rebound)) binding = getBinding(socket.id)
+      if (!('error' in rebound)) {
+        binding = getBinding(socket.id)
+        if (binding) attachSocketToParty(socket, binding.code, binding.playerId)
+      }
     }
     return binding
   }
@@ -198,12 +243,13 @@ io.on('connection', (socket) => {
       const name = String(payload?.name ?? '')
       const language = (payload?.language === 'en' ? 'en' : 'sv') as Lang
       const wantPublic = Boolean(payload?.isPublic)
-      const { room, playerId } = createRoom(name, socket.id, language, null, wantPublic)
+      const { room, playerId } = await createRoom(name, socket.id, language, null, wantPublic)
+      attachSocketToParty(socket, room.code, playerId)
       // Force snapshot flush so a restart right after create can still restore.
       persistNow()
       await flushPersist()
       ack?.({ ok: true, playerId, room: toPublicRoom(room, playerId) })
-      broadcastRoom(room.code)
+      await broadcastRoom(room.code)
     } catch (e) {
       console.error(e)
       ack?.({ ok: false, error: 'Kunde inte skapa rum' })
@@ -219,12 +265,13 @@ io.on('connection', (socket) => {
         ack?.({ ok: false, ...result })
         return
       }
+      attachSocketToParty(socket, result.room.code, result.playerId)
       ack?.({
         ok: true,
         playerId: result.playerId,
         room: toPublicRoom(result.room, result.playerId),
       })
-      broadcastRoom(result.room.code)
+      await broadcastRoom(result.room.code)
     } catch (e) {
       console.error(e)
       ack?.({ ok: false, error: 'Kunde inte gå med' })
@@ -241,12 +288,13 @@ io.on('connection', (socket) => {
         return
       }
       const binding = getBinding(socket.id)
+      if (binding) attachSocketToParty(socket, binding.code, binding.playerId)
       ack?.({
         ok: true,
         playerId: binding!.playerId,
         room: toPublicRoom(result, binding!.playerId),
       })
-      broadcastRoom(result.code)
+      await broadcastRoom(result.code)
     } catch (e) {
       console.error(e)
       ack?.({ ok: false, error: 'Kunde inte återansluta' })
@@ -406,15 +454,22 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const binding = getBinding(socket.id)
     handleDisconnect(socket.id)
-    if (binding) broadcastRoom(binding.code)
+    if (binding) void broadcastRoom(binding.code)
   })
 })
 
 setInterval(() => {
-  for (const room of roomsNeedingTick()) {
-    onPhaseTimeout(room)
-    broadcastRoom(room.code)
-  }
+  void (async () => {
+    for (const room of roomsNeedingTick()) {
+      const endsAt = room.phaseEndsAt
+      const status = room.status
+      if (!(await claimPhaseTick(room.code, endsAt))) continue
+      // Re-check after claim — another instance may have advanced already via Redis reload.
+      if (room.phaseEndsAt !== endsAt || room.status !== status) continue
+      onPhaseTimeout(room)
+      await broadcastRoom(room.code)
+    }
+  })()
 }, 250)
 
 setInterval(() => {

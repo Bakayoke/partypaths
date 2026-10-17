@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { createRoom, joinRoom, startGame, toPublicRoom } from './rooms.js'
+import {
+  createRoom,
+  handleDisconnect,
+  joinRoom,
+  reconnectSocket,
+  startGame,
+  toPublicRoom,
+} from './rooms.js'
 
 describe('lobby joins', () => {
-  it('lets host + three players join (start needs 2 non-host)', () => {
-    const { room, playerId: hostId } = createRoom('Host', 'sock-host', 'sv')
+  it('lets host + three players join (start needs 2 non-host)', async () => {
+    const { room, playerId: hostId } = await createRoom('Host', 'sock-host', 'sv')
     const code = room.code
 
     const p1 = joinRoom(code, 'Ada', 'sock-1')
@@ -25,8 +32,8 @@ describe('lobby joins', () => {
     assert.ok(!('error' in started), `start should work with 3 players`)
   })
 
-  it('starts with host + two players (same party size as when host played)', () => {
-    const { room, playerId: hostId } = createRoom('Host', 'sock-host-2', 'sv')
+  it('starts with host + two players (same party size as when host played)', async () => {
+    const { room, playerId: hostId } = await createRoom('Host', 'sock-host-2', 'sv')
     const code = room.code
     assert.ok(!('error' in joinRoom(code, 'Ada', 'sock-a')))
     assert.ok(!('error' in joinRoom(code, 'Bo', 'sock-b')))
@@ -34,8 +41,8 @@ describe('lobby joins', () => {
     assert.ok(!('error' in started), `start should work with 2 non-host players: ${'error' in started ? started.error : ''}`)
   })
 
-  it('does not let disconnected ghosts block the third seat', () => {
-    const { room } = createRoom('Host', 'sock-host', 'sv')
+  it('does not let disconnected ghosts block the third seat', async () => {
+    const { room } = await createRoom('Host', 'sock-host', 'sv')
     const code = room.code
 
     assert.ok(!('error' in joinRoom(code, 'Ada', 'sock-1')))
@@ -54,8 +61,8 @@ describe('lobby joins', () => {
     assert.ok(!('error' in p3), `third join blocked: ${'error' in p3 ? p3.error : ''}`)
   })
 
-  it('reclaims a disconnected seat by the same name', () => {
-    const { room } = createRoom('Host', 'sock-host', 'sv')
+  it('reclaims a disconnected seat by the same name', async () => {
+    const { room } = await createRoom('Host', 'sock-host', 'sv')
     const code = room.code
     const first = joinRoom(code, 'Ada', 'sock-ada-1')
     assert.ok(!('error' in first))
@@ -71,8 +78,23 @@ describe('lobby joins', () => {
     assert.equal(room.players.filter((p) => p.name === 'Ada').length, 1)
   })
 
-  it('starts with host playing along + one guest', () => {
-    const { room, playerId: hostId } = createRoom('Host', 'sock-host-play', 'sv')
+  it('keeps a seat online when one of two sockets disconnects', async () => {
+    const { room } = await createRoom('Host', 'sock-host-multi', 'sv')
+    const code = room.code
+    const ada = joinRoom(code, 'Ada', 'sock-ada-a')
+    assert.ok(!('error' in ada))
+    if ('error' in ada) return
+
+    const again = reconnectSocket(code, ada.playerId, 'sock-ada-b')
+    assert.ok(!('error' in again))
+
+    handleDisconnect('sock-ada-a')
+    const p = room.players.find((x) => x.id === ada.playerId)
+    assert.ok(p?.connected, 'still connected via second socket')
+  })
+
+  it('starts with host playing along + one guest', async () => {
+    const { room, playerId: hostId } = await createRoom('Host', 'sock-host-play', 'sv')
     const code = room.code
     room.hostPlays = true
     assert.ok(!('error' in joinRoom(code, 'Ada', 'sock-ada-play')))
